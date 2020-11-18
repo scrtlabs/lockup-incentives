@@ -1,21 +1,21 @@
-use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
+use cosmwasm_std::{Coin, HumanAddr, Uint128};
+use std::collections::HashMap;
 
-use cosmwasm_std::{CanonicalAddr, Storage};
-use cosmwasm_storage::{singleton, singleton_read, ReadonlySingleton, Singleton};
+pub type Lockups = HashMap<HumanAddr, Lockup>;
 
-pub static CONFIG_KEY: &[u8] = b"config";
-
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
-pub struct State {
-    pub count: i32,
-    pub owner: CanonicalAddr,
+#[derive(Serialize, Deserialize, Eq, PartialEq, Debug)]
+pub struct Lockup {
+    locked: Vec<Coin>,
+    pending_rewards: Uint128,
 }
 
-pub fn config<S: Storage>(storage: &mut S) -> Singleton<S, State> {
-    singleton(storage, CONFIG_KEY)
+pub type SupportedTokens = Vec<Token>;
+
+pub struct Token {
+    denom: String,
+    weight: u64,
 }
 
-pub fn config_read<S: Storage>(storage: &S) -> ReadonlySingleton<S, State> {
-    singleton_read(storage, CONFIG_KEY)
+pub struct Config {
+    pub admin: HumanAddr,
 }
