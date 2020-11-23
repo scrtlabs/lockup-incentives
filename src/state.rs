@@ -1,21 +1,25 @@
 use cosmwasm_std::{Coin, HumanAddr, Uint128};
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 pub type Lockups = HashMap<HumanAddr, Lockup>;
 
-#[derive(Serialize, Deserialize, Eq, PartialEq, Debug)]
+#[derive(Serialize, Deserialize, Debug)]
 pub struct Lockup {
-    locked: Vec<Coin>,
-    pending_rewards: Uint128,
+    pub locked: u128,
+    pub pending_rewards: u128,
 }
 
-pub type SupportedTokens = Vec<Token>;
-
-pub struct Token {
-    denom: String,
-    weight: u64,
+#[derive(Serialize, Deserialize, Eq, PartialEq, Debug, Clone, JsonSchema)]
+pub struct Snip20 {
+    pub address: HumanAddr,
+    pub contract_hash: String,
 }
 
+#[derive(Serialize, Deserialize, Eq, PartialEq, Debug)]
 pub struct Config {
     pub admin: HumanAddr,
+    pub reward_token: Snip20,
+    pub incentivized: Snip20,
 }
