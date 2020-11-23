@@ -2,6 +2,8 @@ mod constants;
 pub mod contract;
 pub mod msg;
 pub mod state;
+pub mod utils;
+pub mod viewing_key;
 
 #[cfg(target_arch = "wasm32")]
 mod wasm {

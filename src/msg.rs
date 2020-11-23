@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 pub struct InitMsg {
     pub reward_token: Snip20,
     pub incentivized: Snip20,
+    pub prng_seed: Binary,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
@@ -14,7 +15,19 @@ pub struct InitMsg {
 pub enum HandleMsg {
     LockTokens {},
     AddToRewardPool {},
-    Redeem {},
+    Redeem {
+        amount: Uint128,
+    },
+    WithdrawRewards {},
+    CreateViewingKey {
+        entropy: String,
+        padding: Option<String>,
+    },
+    SetViewingKey {
+        key: String,
+        padding: Option<String>,
+    },
+
     Receive {
         sender: HumanAddr,
         from: HumanAddr,
@@ -31,6 +44,9 @@ pub enum QueryMsg {}
 #[serde(rename_all = "snake_case")]
 pub enum HandleAnswer {
     LockTokens { status: ResponseStatus },
+    AddToRewardPool { status: ResponseStatus },
+    Redeem { status: ResponseStatus },
+    WithdrawRewards { status: ResponseStatus },
 }
 
 #[derive(Serialize, Deserialize, Clone, PartialEq, JsonSchema, Debug)]
@@ -48,12 +64,25 @@ pub enum Snip20Msg {
         code_hash: String,
         padding: Option<String>,
     },
+    Transfer {
+        recipient: HumanAddr,
+        amount: Uint128,
+        padding: Option<String>,
+    },
 }
 
 impl Snip20Msg {
     pub fn register_receive(code_hash: String) -> Self {
         Snip20Msg::RegisterReceive {
             code_hash,
+            padding: None,
+        }
+    }
+
+    pub fn transfer(recipient: HumanAddr, amount: Uint128) -> Self {
+        Snip20Msg::Transfer {
+            recipient,
+            amount,
             padding: None,
         }
     }

@@ -22,4 +22,5 @@ pub struct Config {
     pub admin: HumanAddr,
     pub reward_token: Snip20,
     pub incentivized: Snip20,
+    pub prng_seed: Vec<u8>,
 }
