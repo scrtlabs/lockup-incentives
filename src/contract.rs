@@ -9,6 +9,7 @@ use crate::msg::ResponseStatus::Success;
 use crate::msg::{HandleAnswer, HandleMsg, InitMsg, QueryMsg, Snip20Msg};
 use crate::state::{Config, Lockup, Lockups, Snip20};
 use crate::viewing_key::ViewingKey;
+use cosmwasm_storage::PrefixedStorage;
 use secret_toolkit::crypto::sha_256;
 
 pub fn init<S: Storage, A: Api, Q: Querier>(
@@ -65,6 +66,9 @@ pub fn handle<S: Storage, A: Api, Q: Querier>(
         HandleMsg::Receive {
             from, amount, msg, ..
         } => receive(deps, env, from, amount.u128(), msg),
+        HandleMsg::WithdrawRewards {} => withdraw_rewards(deps, env),
+        HandleMsg::CreateViewingKey { entropy, .. } => create_viewing_key(deps, env, entropy),
+        HandleMsg::SetViewingKey { key, .. } => set_viewing_key(deps, env, key),
         _ => unimplemented!(),
     }
 }
@@ -95,7 +99,6 @@ fn receive<S: Storage, A: Api, Q: Querier>(
     match msg {
         HandleMsg::LockTokens {} => lock_tokens(deps, env, from, amount),
         HandleMsg::AddToRewardPool {} => add_to_pool(deps, env, amount),
-        HandleMsg::WithdrawRewards {} => withdraw_rewards(deps, env),
         _ => Err(StdError::generic_err("Illegal internal receive message")),
     }
 }
@@ -238,6 +241,8 @@ fn withdraw_rewards<S: Storage, A: Api, Q: Querier>(
         )));
     }
 
+    lockup_store.store(LOCKUPS_KEY, &lockups)?;
+
     Ok(HandleResponse {
         messages: vec![transfer(env.message.sender, config.incentivized, rewards)?],
         log: vec![],
@@ -250,13 +255,13 @@ pub fn create_viewing_key<S: Storage, A: Api, Q: Querier>(
     env: Env,
     entropy: String,
 ) -> StdResult<HandleResponse> {
-    let constants = ReadonlyConfig::from_storage(&deps.storage).constants()?;
-    let prng_seed = constants.prng_seed;
+    let config: Config = TypedStoreMut::attach(&mut deps.storage).load(CONFIG_KEY)?;
+    let prng_seed = config.prng_seed;
 
     let key = ViewingKey::new(&env, &prng_seed, (&entropy).as_ref());
 
-    let message_sender = deps.api.canonical_address(&env.message.sender)?;
-    write_viewing_key(&mut deps.storage, &message_sender, &key);
+    let mut vk_store = PrefixedStorage::new(VIEWING_KEY_KEY, &mut deps.storage);
+    vk_store.set(env.message.sender.0.as_bytes(), &key.to_hashed());
 
     Ok(HandleResponse {
         messages: vec![],
@@ -272,8 +277,8 @@ pub fn set_viewing_key<S: Storage, A: Api, Q: Querier>(
 ) -> StdResult<HandleResponse> {
     let vk = ViewingKey(key);
 
-    let message_sender = deps.api.canonical_address(&env.message.sender)?;
-    write_viewing_key(&mut deps.storage, &message_sender, &vk);
+    let mut vk_store = PrefixedStorage::new(VIEWING_KEY_KEY, &mut deps.storage);
+    vk_store.set(env.message.sender.0.as_bytes(), &vk.to_hashed());
 
     Ok(HandleResponse {
         messages: vec![],

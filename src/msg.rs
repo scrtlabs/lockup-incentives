@@ -1,4 +1,5 @@
 use crate::state::Snip20;
+use crate::viewing_key::ViewingKey;
 use cosmwasm_std::{Binary, HumanAddr, Uint128};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -47,6 +48,8 @@ pub enum HandleAnswer {
     AddToRewardPool { status: ResponseStatus },
     Redeem { status: ResponseStatus },
     WithdrawRewards { status: ResponseStatus },
+    CreateViewingKey { key: ViewingKey },
+    SetViewingKey { status: ResponseStatus },
 }
 
 #[derive(Serialize, Deserialize, Clone, PartialEq, JsonSchema, Debug)]
