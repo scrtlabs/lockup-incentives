@@ -8,6 +8,8 @@ use serde::{Deserialize, Serialize};
 pub struct InitMsg {
     pub reward_token: Snip20,
     pub incentivized: Snip20,
+    pub pool_claim_block: u64,
+    pub viewing_key: String,
     pub prng_seed: Binary,
 }
 
@@ -29,11 +31,20 @@ pub enum HandleMsg {
         padding: Option<String>,
     },
 
+    // Registered commands
     Receive {
         sender: HumanAddr,
         from: HumanAddr,
         amount: Uint128,
         msg: Binary,
+    },
+
+    // Admin commands
+    UpdateIncentivizedToken {
+        new_token: Snip20,
+    },
+    UpdateRewardToken {
+        new_token: Snip20,
     },
 }
 
@@ -50,6 +61,8 @@ pub enum HandleAnswer {
     WithdrawRewards { status: ResponseStatus },
     CreateViewingKey { key: ViewingKey },
     SetViewingKey { status: ResponseStatus },
+    UpdateIncentivizedToken { status: ResponseStatus },
+    UpdateRewardToken { status: ResponseStatus },
 }
 
 #[derive(Serialize, Deserialize, Clone, PartialEq, JsonSchema, Debug)]

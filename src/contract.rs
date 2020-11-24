@@ -1,7 +1,8 @@
 use cosmwasm_std::{
-    from_binary, to_binary, Api, Binary, CosmosMsg, Env, Extern, HandleResponse, HumanAddr,
-    InitResponse, Querier, StdError, StdResult, Storage, Uint128, WasmMsg,
+    from_binary, to_binary, Api, Binary, BlockInfo, CosmosMsg, Env, Extern, HandleResponse,
+    HumanAddr, InitResponse, Querier, StdError, StdResult, Storage, Uint128, WasmMsg, WasmQuery,
 };
+use secret_toolkit::snip20;
 use secret_toolkit::storage::{TypedStore, TypedStoreMut};
 
 use crate::constants::*;
@@ -31,6 +32,8 @@ pub fn init<S: Storage, A: Api, Q: Querier>(
                 admin: env.message.sender.clone(),
                 reward_token: msg.reward_token.clone(),
                 incentivized: msg.incentivized.clone(),
+                pool_claim_height: msg.pool_claim_block,
+                viewing_key: msg.viewing_key.clone(),
                 prng_seed: prng_seed_hashed.to_vec(),
             },
         )?;
@@ -44,14 +47,28 @@ pub fn init<S: Storage, A: Api, Q: Querier>(
         vk_store.store(REWARD_POOL_KEY, &0u128)?;
     }
 
-    // Register sSCRT and incentivized token
-    let register_msgs = vec![
-        register(env.clone(), msg.reward_token)?,
-        register(env.clone(), msg.incentivized)?,
+    // Register sSCRT and incentivized token, set vks
+    let messages = vec![
+        register(env.clone(), msg.reward_token.clone())?,
+        register(env.clone(), msg.incentivized.clone())?,
+        snip20::handle::set_viewing_key_msg(
+            msg.viewing_key.clone(),
+            None,
+            1,
+            env.contract_code_hash.clone(),
+            msg.reward_token.address,
+        )?,
+        snip20::handle::set_viewing_key_msg(
+            msg.viewing_key,
+            None,
+            1,
+            env.contract_code_hash,
+            msg.incentivized.address,
+        )?,
     ];
 
     Ok(InitResponse {
-        messages: register_msgs,
+        messages,
         log: vec![],
     })
 }
@@ -69,6 +86,8 @@ pub fn handle<S: Storage, A: Api, Q: Querier>(
         HandleMsg::WithdrawRewards {} => withdraw_rewards(deps, env),
         HandleMsg::CreateViewingKey { entropy, .. } => create_viewing_key(deps, env, entropy),
         HandleMsg::SetViewingKey { key, .. } => set_viewing_key(deps, env, key),
+        HandleMsg::UpdateIncentivizedToken { new_token } => update_inc_token(deps, env, new_token),
+        HandleMsg::UpdateRewardToken { new_token } => update_reward_token(deps, env, new_token),
         _ => unimplemented!(),
     }
 }
@@ -287,6 +306,87 @@ pub fn set_viewing_key<S: Storage, A: Api, Q: Querier>(
     })
 }
 
+fn update_inc_token<S: Storage, A: Api, Q: Querier>(
+    deps: &mut Extern<S, A, Q>,
+    env: Env,
+    new_token: Snip20,
+) -> StdResult<HandleResponse> {
+    let mut config_store = TypedStoreMut::attach(&mut deps.storage);
+    let mut config: Config = config_store.load(CONFIG_KEY)?;
+
+    enforce_admin(config.clone(), env)?;
+
+    config.incentivized = new_token.clone();
+    config_store.store(CONFIG_KEY, &config)?;
+
+    Ok(HandleResponse {
+        messages: vec![],
+        log: vec![],
+        data: Some(to_binary(&HandleAnswer::UpdateIncentivizedToken {
+            status: Success,
+        })?),
+    })
+}
+
+fn update_reward_token<S: Storage, A: Api, Q: Querier>(
+    deps: &mut Extern<S, A, Q>,
+    env: Env,
+    new_token: Snip20,
+) -> StdResult<HandleResponse> {
+    let mut config_store = TypedStoreMut::attach(&mut deps.storage);
+    let mut config: Config = config_store.load(CONFIG_KEY)?;
+
+    enforce_admin(config.clone(), env)?;
+
+    config.reward_token = new_token.clone();
+    config_store.store(CONFIG_KEY, &config)?;
+
+    Ok(HandleResponse {
+        messages: vec![],
+        log: vec![],
+        data: Some(to_binary(&HandleAnswer::UpdateRewardToken {
+            status: Success,
+        })?),
+    })
+}
+
+fn claim_reward_pool<S: Storage, A: Api, Q: Querier>(
+    deps: &mut Extern<S, A, Q>,
+    env: Env,
+    destination: Option<HumanAddr>,
+) -> StdResult<HandleResponse> {
+    let mut config_store = TypedStoreMut::attach(&mut deps.storage);
+    let mut config: Config = config_store.load(CONFIG_KEY)?;
+
+    enforce_admin(config.clone(), env.clone())?;
+
+    if env.block.height < config.pool_claim_height {
+        return Err(StdError::generic_err(format!(
+            "minimum claim height hasn't passed yet: {}",
+            config.pool_claim_height
+        )));
+    }
+
+    let total_rewards = snip20::balance_query(
+        &deps.querier,
+        env.contract.address,
+        config.viewing_key,
+        RESPONSE_BLOCK_SIZE,
+        env.contract_code_hash,
+        config.reward_token.address.clone(),
+    )?;
+
+    Ok(HandleResponse {
+        messages: vec![transfer(
+            destination.unwrap_or(env.message.sender),
+            config.reward_token,
+            total_rewards.amount.u128(),
+        )?],
+        log: vec![],
+        data: None,
+    })
+}
+
 // Helper functions
 
 fn register(env: Env, token: Snip20) -> StdResult<CosmosMsg> {
@@ -311,6 +411,17 @@ fn transfer(recipient: HumanAddr, token: Snip20, amount: u128) -> StdResult<Cosm
     });
 
     Ok(message)
+}
+
+fn enforce_admin(config: Config, env: Env) -> StdResult<()> {
+    if config.admin != env.message.sender {
+        return Err(StdError::generic_err(format!(
+            "no assets locked for: {}",
+            env.message.sender
+        )));
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]
