@@ -19,7 +19,7 @@ pub enum HandleMsg {
     LockTokens {},
     AddToRewardPool {},
     Redeem {
-        amount: Uint128,
+        amount: Option<Uint128>,
     },
     WithdrawRewards {},
     CreateViewingKey {
@@ -46,6 +46,14 @@ pub enum HandleMsg {
     UpdateRewardToken {
         new_token: Snip20,
     },
+    ClaimRewardPool {
+        recipient: Option<HumanAddr>,
+    },
+    StopContract {},
+    ResumeContract {},
+    ChangeAdmin {
+        address: HumanAddr,
+    },
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
@@ -63,6 +71,9 @@ pub enum HandleAnswer {
     SetViewingKey { status: ResponseStatus },
     UpdateIncentivizedToken { status: ResponseStatus },
     UpdateRewardToken { status: ResponseStatus },
+    StopContract { status: ResponseStatus },
+    ResumeContract { status: ResponseStatus },
+    ChangeAdmin { status: ResponseStatus },
 }
 
 #[derive(Serialize, Deserialize, Clone, PartialEq, JsonSchema, Debug)]

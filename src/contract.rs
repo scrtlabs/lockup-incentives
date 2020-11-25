@@ -35,6 +35,7 @@ pub fn init<S: Storage, A: Api, Q: Querier>(
                 pool_claim_height: msg.pool_claim_block,
                 viewing_key: msg.viewing_key.clone(),
                 prng_seed: prng_seed_hashed.to_vec(),
+                is_stopped: false,
             },
         )?;
     }
@@ -78,8 +79,21 @@ pub fn handle<S: Storage, A: Api, Q: Querier>(
     env: Env,
     msg: HandleMsg,
 ) -> StdResult<HandleResponse> {
+    let config: Config = TypedStoreMut::attach(&mut deps.storage).load(CONFIG_KEY)?;
+    if config.is_stopped {
+        return match msg {
+            HandleMsg::Redeem { amount } => redeem(deps, env, amount),
+            HandleMsg::WithdrawRewards {} => withdraw_rewards(deps, env),
+            HandleMsg::ResumeContract {} => resume_contract(deps, env),
+            // TODO: Add more messages here
+            _ => Err(StdError::generic_err(
+                "This contract is stopped and this action is not allowed",
+            )),
+        };
+    }
+
     match msg {
-        HandleMsg::Redeem { amount } => redeem(deps, env, amount.u128()),
+        HandleMsg::Redeem { amount } => redeem(deps, env, amount),
         HandleMsg::Receive {
             from, amount, msg, ..
         } => receive(deps, env, from, amount.u128(), msg),
@@ -88,7 +102,10 @@ pub fn handle<S: Storage, A: Api, Q: Querier>(
         HandleMsg::SetViewingKey { key, .. } => set_viewing_key(deps, env, key),
         HandleMsg::UpdateIncentivizedToken { new_token } => update_inc_token(deps, env, new_token),
         HandleMsg::UpdateRewardToken { new_token } => update_reward_token(deps, env, new_token),
-        _ => unimplemented!(),
+        HandleMsg::ClaimRewardPool { recipient } => claim_reward_pool(deps, env, recipient),
+        HandleMsg::StopContract {} => stop_contract(deps, env),
+        HandleMsg::ChangeAdmin { address } => change_admin(deps, env, address),
+        _ => Err(StdError::generic_err("Unavailable or unknown action")),
     }
 }
 
@@ -202,7 +219,7 @@ fn add_to_pool<S: Storage, A: Api, Q: Querier>(
 fn redeem<S: Storage, A: Api, Q: Querier>(
     deps: &mut Extern<S, A, Q>,
     env: Env,
-    amount: u128,
+    amount: Option<Uint128>,
 ) -> StdResult<HandleResponse> {
     let config: Config;
     {
@@ -212,29 +229,33 @@ fn redeem<S: Storage, A: Api, Q: Querier>(
     let mut lockup_store = TypedStoreMut::attach(&mut deps.storage);
     let mut lockups: Lockups = lockup_store.load(LOCKUPS_KEY)?;
 
-    if let Some(user_lockup) = lockups.get_mut(&env.message.sender) {
-        if let Some(new_amount) = user_lockup.locked.checked_sub(amount) {
-            user_lockup.locked = new_amount;
-        } else {
-            return Err(StdError::generic_err(format!(
-                "insufficient funds to redeem: balance={}, required={}",
-                user_lockup.locked, amount,
-            )));
+    match lockups.get_mut(&env.message.sender) {
+        None => Err(StdError::generic_err("no funds to redeem")),
+        Some(user_lockup) => {
+            // If no amount provided - redeem all
+            let amount = match amount {
+                Some(unwrapped) => unwrapped.u128(),
+                None => user_lockup.locked,
+            };
+
+            if let Some(new_amount) = user_lockup.locked.checked_sub(amount) {
+                user_lockup.locked = new_amount;
+            } else {
+                return Err(StdError::generic_err(format!(
+                    "insufficient funds to redeem: balance={}, required={}",
+                    user_lockup.locked, amount,
+                )));
+            }
+
+            lockup_store.store(LOCKUPS_KEY, &lockups)?;
+
+            Ok(HandleResponse {
+                messages: vec![transfer(env.message.sender, config.reward_token, amount)?],
+                log: vec![],
+                data: None,
+            })
         }
-    } else {
-        return Err(StdError::generic_err(format!(
-            "insufficient funds to redeem: balance={}, required={}",
-            0, amount,
-        )));
     }
-
-    lockup_store.store(LOCKUPS_KEY, &lockups)?;
-
-    Ok(HandleResponse {
-        messages: vec![transfer(env.message.sender, config.reward_token, amount)?],
-        log: vec![],
-        data: None,
-    })
 }
 
 fn withdraw_rewards<S: Storage, A: Api, Q: Querier>(
@@ -353,7 +374,7 @@ fn update_reward_token<S: Storage, A: Api, Q: Querier>(
 fn claim_reward_pool<S: Storage, A: Api, Q: Querier>(
     deps: &mut Extern<S, A, Q>,
     env: Env,
-    destination: Option<HumanAddr>,
+    recipient: Option<HumanAddr>,
 ) -> StdResult<HandleResponse> {
     let mut config_store = TypedStoreMut::attach(&mut deps.storage);
     let mut config: Config = config_store.load(CONFIG_KEY)?;
@@ -378,12 +399,72 @@ fn claim_reward_pool<S: Storage, A: Api, Q: Querier>(
 
     Ok(HandleResponse {
         messages: vec![transfer(
-            destination.unwrap_or(env.message.sender),
+            recipient.unwrap_or(env.message.sender),
             config.reward_token,
             total_rewards.amount.u128(),
         )?],
         log: vec![],
         data: None,
+    })
+}
+
+fn stop_contract<S: Storage, A: Api, Q: Querier>(
+    deps: &mut Extern<S, A, Q>,
+    env: Env,
+) -> StdResult<HandleResponse> {
+    let mut config_store = TypedStoreMut::attach(&mut deps.storage);
+    let mut config: Config = config_store.load(CONFIG_KEY)?;
+
+    enforce_admin(config.clone(), env)?;
+
+    config.is_stopped = true;
+    config_store.store(CONFIG_KEY, &config)?;
+
+    Ok(HandleResponse {
+        messages: vec![],
+        log: vec![],
+        data: Some(to_binary(&HandleAnswer::StopContract { status: Success })?),
+    })
+}
+
+fn resume_contract<S: Storage, A: Api, Q: Querier>(
+    deps: &mut Extern<S, A, Q>,
+    env: Env,
+) -> StdResult<HandleResponse> {
+    let mut config_store = TypedStoreMut::attach(&mut deps.storage);
+    let mut config: Config = config_store.load(CONFIG_KEY)?;
+
+    enforce_admin(config.clone(), env)?;
+
+    config.is_stopped = false;
+    config_store.store(CONFIG_KEY, &config)?;
+
+    Ok(HandleResponse {
+        messages: vec![],
+        log: vec![],
+        data: Some(to_binary(&HandleAnswer::ResumeContract {
+            status: Success,
+        })?),
+    })
+}
+
+fn change_admin<S: Storage, A: Api, Q: Querier>(
+    deps: &mut Extern<S, A, Q>,
+    env: Env,
+    address: HumanAddr,
+) -> StdResult<HandleResponse> {
+    let mut config_store = TypedStoreMut::attach(&mut deps.storage);
+    let mut config: Config = config_store.load(CONFIG_KEY)?;
+
+    enforce_admin(config.clone(), env)?;
+
+    config.admin = address;
+    config_store.store(CONFIG_KEY, &config)?;
+
+    Ok(HandleResponse {
+        messages: vec![],
+        log: vec![],
+        data: Some(to_binary(&HandleAnswer::ChangeAdmin { status: Success })?),
     })
 }
 

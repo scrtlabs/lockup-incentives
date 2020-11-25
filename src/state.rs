@@ -25,4 +25,5 @@ pub struct Config {
     pub pool_claim_height: u64,
     pub viewing_key: String,
     pub prng_seed: Vec<u8>,
+    pub is_stopped: bool,
 }
