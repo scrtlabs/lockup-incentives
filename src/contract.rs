@@ -1,16 +1,17 @@
 use cosmwasm_std::{
     from_binary, to_binary, Api, Binary, BlockInfo, CosmosMsg, Env, Extern, HandleResponse,
-    HumanAddr, InitResponse, Querier, StdError, StdResult, Storage, Uint128, WasmMsg, WasmQuery,
+    HumanAddr, InitResponse, Querier, ReadonlyStorage, StdError, StdResult, Storage, Uint128,
+    WasmMsg, WasmQuery,
 };
 use secret_toolkit::snip20;
 use secret_toolkit::storage::{TypedStore, TypedStoreMut};
 
 use crate::constants::*;
 use crate::msg::ResponseStatus::Success;
-use crate::msg::{HandleAnswer, HandleMsg, InitMsg, QueryMsg, Snip20Msg};
+use crate::msg::{HandleAnswer, HandleMsg, InitMsg, QueryAnswer, QueryMsg, Snip20Msg};
 use crate::state::{Config, Lockup, Lockups, Snip20};
-use crate::viewing_key::ViewingKey;
-use cosmwasm_storage::PrefixedStorage;
+use crate::viewing_key::{ViewingKey, VIEWING_KEY_SIZE};
+use cosmwasm_storage::{PrefixedStorage, ReadonlyPrefixedStorage};
 use secret_toolkit::crypto::sha_256;
 
 pub fn init<S: Storage, A: Api, Q: Querier>(
@@ -113,8 +114,34 @@ pub fn query<S: Storage, A: Api, Q: Querier>(
     deps: &Extern<S, A, Q>,
     msg: QueryMsg,
 ) -> StdResult<Binary> {
-    match msg {};
+    match msg {
+        _ => {}
+    };
     unimplemented!()
+}
+
+pub fn authenticated_queries<S: Storage, A: Api, Q: Querier>(
+    deps: &Extern<S, A, Q>,
+    msg: QueryMsg,
+) -> StdResult<Binary> {
+    let (address, key) = msg.get_validation_params();
+
+    let vk_store = ReadonlyPrefixedStorage::new(VIEWING_KEY_KEY, &deps.storage);
+    let expected_key = vk_store.get(address.0.as_bytes());
+
+    if expected_key.is_none() {
+        // Checking the key will take significant time. We don't want to exit immediately if it isn't set
+        // in a way which will allow to time the command and determine if a viewing key doesn't exist
+        key.check_viewing_key(&[0u8; VIEWING_KEY_SIZE]);
+    } else if key.check_viewing_key(expected_key.unwrap().as_slice()) {
+        return match msg {
+            QueryMsg::QueryRewards { address, .. } => query_rewards(deps, &address),
+        };
+    }
+
+    Ok(to_binary(&QueryAnswer::ViewingKeyError {
+        msg: "Wrong viewing key for this address or viewing key not set".to_string(),
+    })?)
 }
 
 fn receive<S: Storage, A: Api, Q: Querier>(
@@ -465,6 +492,22 @@ fn change_admin<S: Storage, A: Api, Q: Querier>(
         messages: vec![],
         log: vec![],
         data: Some(to_binary(&HandleAnswer::ChangeAdmin { status: Success })?),
+    })
+}
+
+pub fn query_rewards<S: Storage, A: Api, Q: Querier>(
+    deps: &Extern<S, A, Q>,
+    address: &HumanAddr,
+) -> StdResult<Binary> {
+    let lockups: Lockups = TypedStore::attach(&deps.storage).load(LOCKUPS_KEY)?;
+
+    let amount = match lockups.get(address) {
+        None => 0,
+        Some(lockup) => lockup.pending_rewards,
+    };
+
+    to_binary(&QueryAnswer::QueryRewards {
+        rewards: Uint128(amount),
     })
 }
 

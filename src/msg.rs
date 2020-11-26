@@ -56,10 +56,6 @@ pub enum HandleMsg {
     },
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum QueryMsg {}
-
 #[derive(Serialize, Deserialize, JsonSchema, Debug)]
 #[serde(rename_all = "snake_case")]
 pub enum HandleAnswer {
@@ -74,6 +70,28 @@ pub enum HandleAnswer {
     StopContract { status: ResponseStatus },
     ResumeContract { status: ResponseStatus },
     ChangeAdmin { status: ResponseStatus },
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum QueryMsg {
+    QueryRewards { address: HumanAddr, key: String },
+}
+
+impl QueryMsg {
+    pub fn get_validation_params(&self) -> (&HumanAddr, ViewingKey) {
+        match self {
+            QueryMsg::QueryRewards { address, key } => (address, ViewingKey(key.clone())),
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, JsonSchema, Debug)]
+#[serde(rename_all = "snake_case")]
+pub enum QueryAnswer {
+    QueryRewards { rewards: Uint128 },
+
+    ViewingKeyError { msg: String },
 }
 
 #[derive(Serialize, Deserialize, Clone, PartialEq, JsonSchema, Debug)]
