@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
 pub struct InitMsg {
     pub reward_token: Snip20,
-    pub incentivized: Snip20,
+    pub inc_token: Snip20,
     pub end_by_height: u64,
     pub pool_claim_block: u64,
     pub viewing_key: String,
@@ -22,7 +22,6 @@ pub enum HandleMsg {
     Redeem {
         amount: Option<Uint128>,
     },
-    WithdrawRewards {},
     CreateViewingKey {
         entropy: String,
         padding: Option<String>,

@@ -1,15 +1,8 @@
 use cosmwasm_std::{Coin, HumanAddr, Uint128};
+use rust_decimal::Decimal;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-
-pub type Lockups = HashMap<HumanAddr, Lockup>;
-
-#[derive(Serialize, Deserialize, Debug)]
-pub struct Lockup {
-    pub locked: u128,
-    pub pending_rewards: u128,
-}
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct UserInfo {
@@ -27,7 +20,7 @@ pub struct Snip20 {
 pub struct Config {
     pub admin: HumanAddr,
     pub reward_token: Snip20,
-    pub incentivized: Snip20,
+    pub inc_token: Snip20,
     pub pool_claim_height: u64,
     pub end_by_height: u64,
     pub viewing_key: String,
