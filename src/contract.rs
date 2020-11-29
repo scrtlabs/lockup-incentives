@@ -11,7 +11,7 @@ use crate::msg::ResponseStatus::Success;
 use crate::msg::{HandleAnswer, HandleMsg, InitMsg, QueryAnswer, QueryMsg, Snip20Msg};
 use crate::state::{Config, Lockup, Lockups, Snip20};
 use crate::viewing_key::{ViewingKey, VIEWING_KEY_SIZE};
-use cosmwasm_storage::{PrefixedStorage, ReadonlyPrefixedStorage};
+use cosmwasm_storage::{PrefixedStorage, ReadonlyPrefixedStorage, TypedStorage};
 use secret_toolkit::crypto::sha_256;
 
 pub fn init<S: Storage, A: Api, Q: Querier>(
@@ -115,9 +115,12 @@ pub fn query<S: Storage, A: Api, Q: Querier>(
     msg: QueryMsg,
 ) -> StdResult<Binary> {
     match msg {
-        _ => {}
-    };
-    unimplemented!()
+        QueryMsg::QueryUnlockClaimHeight {} => query_claim_unlock_height(deps),
+        QueryMsg::QueryContractStatus {} => query_contract_status(deps),
+        QueryMsg::QueryRewardToken {} => query_reward_token(deps),
+        QueryMsg::QueryIncentivizedToken {} => query_incentivized_token(deps),
+        _ => authenticated_queries(deps, msg),
+    }
 }
 
 pub fn authenticated_queries<S: Storage, A: Api, Q: Querier>(
@@ -136,13 +139,17 @@ pub fn authenticated_queries<S: Storage, A: Api, Q: Querier>(
     } else if key.check_viewing_key(expected_key.unwrap().as_slice()) {
         return match msg {
             QueryMsg::QueryRewards { address, .. } => query_rewards(deps, &address),
+            QueryMsg::QueryDeposit { address, .. } => query_deposit(deps, &address),
+            _ => panic!("This should never happen"),
         };
     }
 
-    Ok(to_binary(&QueryAnswer::ViewingKeyError {
+    Ok(to_binary(&QueryAnswer::QueryError {
         msg: "Wrong viewing key for this address or viewing key not set".to_string(),
     })?)
 }
+
+// Handle functions
 
 fn receive<S: Storage, A: Api, Q: Querier>(
     deps: &mut Extern<S, A, Q>,
@@ -495,7 +502,9 @@ fn change_admin<S: Storage, A: Api, Q: Querier>(
     })
 }
 
-pub fn query_rewards<S: Storage, A: Api, Q: Querier>(
+// Query functions
+
+fn query_rewards<S: Storage, A: Api, Q: Querier>(
     deps: &Extern<S, A, Q>,
     address: &HumanAddr,
 ) -> StdResult<Binary> {
@@ -508,6 +517,60 @@ pub fn query_rewards<S: Storage, A: Api, Q: Querier>(
 
     to_binary(&QueryAnswer::QueryRewards {
         rewards: Uint128(amount),
+    })
+}
+
+fn query_deposit<S: Storage, A: Api, Q: Querier>(
+    deps: &Extern<S, A, Q>,
+    address: &HumanAddr,
+) -> StdResult<Binary> {
+    let lockups: Lockups = TypedStore::attach(&deps.storage).load(LOCKUPS_KEY)?;
+
+    let amount = match lockups.get(address) {
+        None => 0,
+        Some(lockup) => lockup.locked,
+    };
+
+    to_binary(&QueryAnswer::QueryDeposit {
+        deposit: Uint128(amount),
+    })
+}
+
+fn query_claim_unlock_height<S: Storage, A: Api, Q: Querier>(
+    deps: &Extern<S, A, Q>,
+) -> StdResult<Binary> {
+    let config: Config = TypedStore::attach(&deps.storage).load(CONFIG_KEY)?;
+
+    to_binary(&QueryAnswer::QueryUnlockClaimHeight {
+        height: Uint128(u128(config.pool_claim_height)),
+    })
+}
+
+fn query_contract_status<S: Storage, A: Api, Q: Querier>(
+    deps: &Extern<S, A, Q>,
+) -> StdResult<Binary> {
+    let config: Config = TypedStore::attach(&deps.storage).load(CONFIG_KEY)?;
+
+    to_binary(&QueryAnswer::QueryContractStatus {
+        is_stopped: config.is_stopped,
+    })
+}
+
+fn query_reward_token<S: Storage, A: Api, Q: Querier>(deps: &Extern<S, A, Q>) -> StdResult<Binary> {
+    let config: Config = TypedStore::attach(&deps.storage).load(CONFIG_KEY)?;
+
+    to_binary(&QueryAnswer::QueryRewardToken {
+        token: config.reward_token,
+    })
+}
+
+fn query_incentivized_token<S: Storage, A: Api, Q: Querier>(
+    deps: &Extern<S, A, Q>,
+) -> StdResult<Binary> {
+    let config: Config = TypedStore::attach(&deps.storage).load(CONFIG_KEY)?;
+
+    to_binary(&QueryAnswer::QueryIncentivizedToken {
+        token: config.incentivized,
     })
 }
 
