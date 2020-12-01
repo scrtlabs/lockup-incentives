@@ -79,6 +79,8 @@ pub enum QueryMsg {
     QueryContractStatus {},
     QueryRewardToken {},
     QueryIncentivizedToken {},
+    QueryEndHeight {},
+    QueryLastRewardBlock {},
 
     // Authenticated
     QueryRewards { address: HumanAddr, key: String },
@@ -104,6 +106,8 @@ pub enum QueryAnswer {
     QueryContractStatus { is_stopped: bool },
     QueryRewardToken { token: Snip20 },
     QueryIncentivizedToken { token: Snip20 },
+    QueryEndHeight { height: u64 },
+    QueryLastRewardBlock { height: u64 },
 
     QueryError { msg: String },
 }
@@ -113,36 +117,4 @@ pub enum QueryAnswer {
 pub enum ResponseStatus {
     Success,
     Failure,
-}
-
-// Messages sent to SNIP-20 contracts
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum Snip20Msg {
-    RegisterReceive {
-        code_hash: String,
-        padding: Option<String>,
-    },
-    Transfer {
-        recipient: HumanAddr,
-        amount: Uint128,
-        padding: Option<String>,
-    },
-}
-
-impl Snip20Msg {
-    pub fn register_receive(code_hash: String) -> Self {
-        Snip20Msg::RegisterReceive {
-            code_hash,
-            padding: None,
-        }
-    }
-
-    pub fn transfer(recipient: HumanAddr, amount: Uint128) -> Self {
-        Snip20Msg::Transfer {
-            recipient,
-            amount,
-            padding: None,
-        }
-    }
 }

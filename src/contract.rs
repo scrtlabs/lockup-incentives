@@ -1,18 +1,18 @@
 use cosmwasm_std::{
-    from_binary, to_binary, Api, BankMsg, Binary, BlockInfo, Coin, CosmosMsg, Env, Extern,
-    HandleResponse, HumanAddr, InitResponse, Querier, ReadonlyStorage, StdError, StdResult,
-    Storage, Uint128, WasmMsg, WasmQuery,
+    from_binary, to_binary, Api, Binary, CosmosMsg, Env, Extern, HandleResponse, HumanAddr,
+    InitResponse, Querier, ReadonlyStorage, StdError, StdResult, Storage, Uint128,
 };
+use cosmwasm_storage::{PrefixedStorage, ReadonlyPrefixedStorage};
+use secret_toolkit::crypto::sha_256;
 use secret_toolkit::snip20;
 use secret_toolkit::storage::{TypedStore, TypedStoreMut};
+use secret_toolkit::utils::{pad_handle_result, pad_query_result};
 
 use crate::constants::*;
 use crate::msg::ResponseStatus::Success;
-use crate::msg::{HandleAnswer, HandleMsg, InitMsg, QueryAnswer, QueryMsg, Snip20Msg};
+use crate::msg::{HandleAnswer, HandleMsg, InitMsg, QueryAnswer, QueryMsg};
 use crate::state::{Config, RewardPool, Snip20, UserInfo};
 use crate::viewing_key::{ViewingKey, VIEWING_KEY_SIZE};
-use cosmwasm_storage::{PrefixedStorage, ReadonlyPrefixedStorage, TypedStorage};
-use secret_toolkit::crypto::sha_256;
 
 pub fn init<S: Storage, A: Api, Q: Querier>(
     deps: &mut Extern<S, A, Q>,
@@ -41,38 +41,34 @@ pub fn init<S: Storage, A: Api, Q: Querier>(
         let mut pool_store = TypedStoreMut::attach(&mut deps.storage);
         pool_store.store(REWARD_POOL_KEY, &0u128)?;
     }
-    // {
-    //     let mut vk_store = TypedStoreMut::attach(&mut deps.storage);
-    //     vk_store.store(REWARD_POOL_KEY, &0u128)?;
-    // }
 
     // Register sSCRT and incentivized token, set vks
     let messages = vec![
         snip20::register_receive_msg(
             env.contract_code_hash.clone(),
             None,
-            RESPONSE_BLOCK_SIZE,
+            1, // This is public data, no need to pad
             msg.reward_token.contract_hash.clone(),
             msg.reward_token.address.clone(),
         )?,
         snip20::register_receive_msg(
             env.contract_code_hash,
             None,
-            RESPONSE_BLOCK_SIZE,
+            1,
             msg.inc_token.contract_hash.clone(),
             msg.inc_token.address.clone(),
         )?,
         snip20::set_viewing_key_msg(
             msg.viewing_key.clone(),
             None,
-            1,
+            RESPONSE_BLOCK_SIZE, // This is private data, need to pad
             msg.reward_token.contract_hash,
             msg.reward_token.address,
         )?,
         snip20::set_viewing_key_msg(
             msg.viewing_key,
             None,
-            1,
+            RESPONSE_BLOCK_SIZE,
             msg.inc_token.contract_hash,
             msg.inc_token.address,
         )?,
@@ -101,7 +97,7 @@ pub fn handle<S: Storage, A: Api, Q: Querier>(
         };
     }
 
-    match msg {
+    let response = match msg {
         HandleMsg::Redeem { amount } => redeem(deps, env, amount),
         HandleMsg::Receive {
             from, amount, msg, ..
@@ -114,20 +110,26 @@ pub fn handle<S: Storage, A: Api, Q: Querier>(
         HandleMsg::StopContract {} => stop_contract(deps, env),
         HandleMsg::ChangeAdmin { address } => change_admin(deps, env, address),
         _ => Err(StdError::generic_err("Unavailable or unknown action")),
-    }
+    };
+
+    pad_handle_result(response, RESPONSE_BLOCK_SIZE)
 }
 
 pub fn query<S: Storage, A: Api, Q: Querier>(
     deps: &Extern<S, A, Q>,
     msg: QueryMsg,
 ) -> StdResult<Binary> {
-    match msg {
+    let response = match msg {
         QueryMsg::QueryUnlockClaimHeight {} => query_claim_unlock_height(deps),
         QueryMsg::QueryContractStatus {} => query_contract_status(deps),
         QueryMsg::QueryRewardToken {} => query_reward_token(deps),
         QueryMsg::QueryIncentivizedToken {} => query_incentivized_token(deps),
+        QueryMsg::QueryEndHeight {} => query_end_height(deps),
+        QueryMsg::QueryLastRewardBlock {} => query_last_reward_block(deps),
         _ => authenticated_queries(deps, msg),
-    }
+    };
+
+    pad_query_result(response, RESPONSE_BLOCK_SIZE)
 }
 
 pub fn authenticated_queries<S: Storage, A: Api, Q: Querier>(
@@ -145,7 +147,7 @@ pub fn authenticated_queries<S: Storage, A: Api, Q: Querier>(
         key.check_viewing_key(&[0u8; VIEWING_KEY_SIZE]);
     } else if key.check_viewing_key(expected_key.unwrap().as_slice()) {
         return match msg {
-            QueryMsg::QueryRewards { address, .. } => query_rewards(deps, &address),
+            QueryMsg::QueryRewards { address, .. } => query_pending_rewards(deps, &address),
             QueryMsg::QueryDeposit { address, .. } => query_deposit(deps, &address),
             _ => panic!("This should never happen"),
         };
@@ -195,6 +197,9 @@ fn lock_tokens<S: Storage, A: Api, Q: Querier>(
         )));
     }
 
+    // Adjust scale to allow easy division and prevent overflows
+    let amount = amount / INC_TOKEN_SCALE;
+
     let mut reward_pool = update_rewards(deps, &env, &config)?;
 
     let mut messages: Vec<CosmosMsg> = vec![];
@@ -204,7 +209,7 @@ fn lock_tokens<S: Storage, A: Api, Q: Querier>(
         .unwrap_or(UserInfo { locked: 0, debt: 0 }); // NotFound is the only possible error
 
     if user.locked > 0 {
-        let pending = user.locked * reward_pool.acc_reward_per_share / REWARD_MUL - user.debt;
+        let pending = user.locked * reward_pool.acc_reward_per_share / REWARD_SCALE - user.debt;
         if pending > 0 {
             messages.push(secret_toolkit::snip20::transfer_msg(
                 from.clone(),
@@ -217,12 +222,12 @@ fn lock_tokens<S: Storage, A: Api, Q: Querier>(
         }
     }
 
-    user.locked += amount / INC_TOKEN_DIV;
-    user.debt = user.locked * reward_pool.acc_reward_per_share / REWARD_MUL;
+    user.locked += amount;
+    user.debt = user.locked * reward_pool.acc_reward_per_share / REWARD_SCALE;
     users_store.store(from.0.as_bytes(), &user)?;
 
-    reward_pool.inc_token_supply += amount / INC_TOKEN_DIV;
-    TypedStoreMut::attach(&mut deps.storage).store(REWARD_POOL_KEY, &reward_pool);
+    reward_pool.inc_token_supply += amount;
+    TypedStoreMut::attach(&mut deps.storage).store(REWARD_POOL_KEY, &reward_pool)?;
 
     Ok(HandleResponse {
         messages,
@@ -247,7 +252,7 @@ fn add_to_pool<S: Storage, A: Api, Q: Querier>(
     let mut reward_pool = update_rewards(deps, &env, &config)?;
 
     reward_pool.pending_rewards += amount;
-    TypedStoreMut::attach(&mut deps.storage).store(REWARD_POOL_KEY, &reward_pool);
+    TypedStoreMut::attach(&mut deps.storage).store(REWARD_POOL_KEY, &reward_pool)?;
 
     Ok(HandleResponse {
         messages: vec![],
@@ -268,9 +273,9 @@ fn redeem<S: Storage, A: Api, Q: Querier>(
         .load(env.message.sender.0.as_bytes())
         .unwrap_or(UserInfo { locked: 0, debt: 0 }); // NotFound is the only possible error
     let amount = amount
-        .unwrap_or(Uint128(user.locked * INC_TOKEN_DIV)) // Multiplying to match scale
+        .unwrap_or(Uint128(user.locked * INC_TOKEN_SCALE)) // Multiplying to match scale
         .u128()
-        / INC_TOKEN_DIV;
+        / INC_TOKEN_SCALE;
 
     if amount > user.locked {
         return Err(StdError::generic_err(format!(
@@ -280,8 +285,8 @@ fn redeem<S: Storage, A: Api, Q: Querier>(
     }
 
     let mut messages: Vec<CosmosMsg> = vec![];
-    let reward_pool = update_rewards(deps, &env, &config)?;
-    let pending = user.locked * reward_pool.acc_reward_per_share / REWARD_MUL - user.debt;
+    let mut reward_pool = update_rewards(deps, &env, &config)?;
+    let pending = user.locked * reward_pool.acc_reward_per_share / REWARD_SCALE - user.debt;
     if pending > 0 {
         // Transfer rewards
         messages.push(secret_toolkit::snip20::transfer_msg(
@@ -296,18 +301,21 @@ fn redeem<S: Storage, A: Api, Q: Querier>(
 
     // Transfer redeemed tokens
     user.locked -= amount;
+    user.debt = user.locked * reward_pool.acc_reward_per_share / REWARD_SCALE;
+    TypedStoreMut::<UserInfo, S>::attach(&mut deps.storage)
+        .store(env.message.sender.0.as_bytes(), &user)?;
+
+    reward_pool.inc_token_supply -= amount;
+    TypedStoreMut::attach(&mut deps.storage).store(REWARD_POOL_KEY, &reward_pool)?;
+
     messages.push(secret_toolkit::snip20::transfer_msg(
         env.message.sender.clone(),
-        Uint128(amount * INC_TOKEN_DIV),
+        Uint128(amount * INC_TOKEN_SCALE),
         None,
         RESPONSE_BLOCK_SIZE,
         config.inc_token.contract_hash,
         config.inc_token.address,
     )?);
-
-    user.debt = user.locked * reward_pool.acc_reward_per_share / REWARD_MUL;
-    TypedStoreMut::<UserInfo, S>::attach(&mut deps.storage)
-        .store(env.message.sender.clone().0.as_bytes(), &user)?;
 
     Ok(HandleResponse {
         messages,
@@ -363,7 +371,7 @@ fn update_inc_token<S: Storage, A: Api, Q: Querier>(
 
     enforce_admin(config.clone(), env)?;
 
-    config.inc_token = new_token.clone();
+    config.inc_token = new_token;
     config_store.store(CONFIG_KEY, &config)?;
 
     Ok(HandleResponse {
@@ -385,7 +393,7 @@ fn update_reward_token<S: Storage, A: Api, Q: Querier>(
 
     enforce_admin(config.clone(), env)?;
 
-    config.reward_token = new_token.clone();
+    config.reward_token = new_token;
     config_store.store(CONFIG_KEY, &config)?;
 
     Ok(HandleResponse {
@@ -402,8 +410,8 @@ fn claim_reward_pool<S: Storage, A: Api, Q: Querier>(
     env: Env,
     recipient: Option<HumanAddr>,
 ) -> StdResult<HandleResponse> {
-    let mut config_store = TypedStoreMut::attach(&mut deps.storage);
-    let mut config: Config = config_store.load(CONFIG_KEY)?;
+    let config_store = TypedStore::attach(&deps.storage);
+    let config: Config = config_store.load(CONFIG_KEY)?;
 
     enforce_admin(config.clone(), env.clone())?;
 
@@ -499,16 +507,21 @@ fn change_admin<S: Storage, A: Api, Q: Querier>(
 
 // Query functions
 
-fn query_rewards<S: Storage, A: Api, Q: Querier>(
+fn query_pending_rewards<S: Storage, A: Api, Q: Querier>(
     deps: &Extern<S, A, Q>,
     address: &HumanAddr,
 ) -> StdResult<Binary> {
-    let user: UserInfo = TypedStore::attach(&deps.storage)
+    let reward_pool = TypedStore::<RewardPool, S>::attach(&deps.storage).load(REWARD_POOL_KEY)?;
+    let user = TypedStore::<UserInfo, S>::attach(&deps.storage)
         .load(address.0.as_bytes())
         .unwrap_or(UserInfo { locked: 0, debt: 0 });
 
     to_binary(&QueryAnswer::QueryRewards {
-        rewards: Uint128(user.locked),
+        // This returns the pending reward for the last time the rewards got updated (not block-by-block accurate,
+        // because we don't have block height data on queries).
+        // For block-by-block accurate calculations, a user will have to query the data and perform calculations
+        // on his own (similar to `update_rewards()`).
+        rewards: Uint128(user.locked * reward_pool.acc_reward_per_share / REWARD_SCALE - user.debt),
     })
 }
 
@@ -563,6 +576,24 @@ fn query_incentivized_token<S: Storage, A: Api, Q: Querier>(
     })
 }
 
+fn query_end_height<S: Storage, A: Api, Q: Querier>(deps: &Extern<S, A, Q>) -> StdResult<Binary> {
+    let config: Config = TypedStore::attach(&deps.storage).load(CONFIG_KEY)?;
+
+    to_binary(&QueryAnswer::QueryEndHeight {
+        height: config.end_by_height,
+    })
+}
+
+fn query_last_reward_block<S: Storage, A: Api, Q: Querier>(
+    deps: &Extern<S, A, Q>,
+) -> StdResult<Binary> {
+    let reward_pool: RewardPool = TypedStore::attach(&deps.storage).load(REWARD_POOL_KEY)?;
+
+    to_binary(&QueryAnswer::QueryEndHeight {
+        height: reward_pool.last_reward_block,
+    })
+}
+
 // Helper functions
 
 fn enforce_admin(config: Config, env: Env) -> StdResult<()> {
@@ -586,25 +617,25 @@ fn update_rewards<S: Storage, A: Api, Q: Querier>(
 
     if env.block.height <= reward_pool.last_reward_block || env.block.height > config.end_by_height
     {
-        return Ok(reward_pool.clone());
+        return Ok(reward_pool);
     }
 
     if reward_pool.inc_token_supply == 0 || reward_pool.pending_rewards == 0 {
         reward_pool.last_reward_block = env.block.height;
         rewards_store.store(REWARD_POOL_KEY, &reward_pool)?;
-        return Ok(reward_pool.clone());
+        return Ok(reward_pool);
     }
 
     let blocks_to_go = config.end_by_height - reward_pool.last_reward_block;
     let blocks_to_vest = env.block.height - reward_pool.last_reward_block;
     let rewards = blocks_to_vest as u128 * (reward_pool.pending_rewards / (blocks_to_go as u128));
 
-    reward_pool.acc_reward_per_share += rewards * REWARD_MUL / reward_pool.inc_token_supply;
+    reward_pool.acc_reward_per_share += rewards * REWARD_SCALE / reward_pool.inc_token_supply;
 
     reward_pool.last_reward_block = env.block.height;
     rewards_store.store(REWARD_POOL_KEY, &reward_pool)?;
 
-    Ok(reward_pool.clone())
+    Ok(reward_pool)
 }
 
 #[cfg(test)]

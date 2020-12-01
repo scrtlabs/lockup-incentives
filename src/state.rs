@@ -1,8 +1,6 @@
-use cosmwasm_std::{Coin, HumanAddr, Uint128};
-use rust_decimal::Decimal;
+use cosmwasm_std::HumanAddr;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct UserInfo {
