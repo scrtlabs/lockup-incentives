@@ -30,6 +30,7 @@ pub enum HandleMsg {
         key: String,
         padding: Option<String>,
     },
+    EmergencyRedeem {},
 
     // Registered commands
     Receive {

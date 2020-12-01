@@ -20,27 +20,31 @@ pub fn init<S: Storage, A: Api, Q: Querier>(
     msg: InitMsg,
 ) -> StdResult<InitResponse> {
     // Initialize state
-    {
-        let prng_seed_hashed = sha_256(&msg.prng_seed.0);
-        let mut config_store = TypedStoreMut::attach(&mut deps.storage);
-        config_store.store(
-            CONFIG_KEY,
-            &Config {
-                admin: env.message.sender.clone(),
-                reward_token: msg.reward_token.clone(),
-                inc_token: msg.inc_token.clone(),
-                pool_claim_height: msg.pool_claim_block,
-                end_by_height: msg.end_by_height,
-                viewing_key: msg.viewing_key.clone(),
-                prng_seed: prng_seed_hashed.to_vec(),
-                is_stopped: false,
-            },
-        )?;
-    }
-    {
-        let mut pool_store = TypedStoreMut::attach(&mut deps.storage);
-        pool_store.store(REWARD_POOL_KEY, &0u128)?;
-    }
+    let prng_seed_hashed = sha_256(&msg.prng_seed.0);
+    let mut config_store = TypedStoreMut::attach(&mut deps.storage);
+    config_store.store(
+        CONFIG_KEY,
+        &Config {
+            admin: env.message.sender.clone(),
+            reward_token: msg.reward_token.clone(),
+            inc_token: msg.inc_token.clone(),
+            pool_claim_height: msg.pool_claim_block,
+            end_by_height: msg.end_by_height,
+            viewing_key: msg.viewing_key.clone(),
+            prng_seed: prng_seed_hashed.to_vec(),
+            is_stopped: false,
+        },
+    )?;
+
+    TypedStoreMut::<RewardPool, S>::attach(&mut deps.storage).store(
+        REWARD_POOL_KEY,
+        &RewardPool {
+            pending_rewards: 0,
+            inc_token_supply: 0,
+            last_reward_block: 0,
+            acc_reward_per_share: 0,
+        },
+    )?;
 
     // Register sSCRT and incentivized token, set vks
     let messages = vec![
@@ -89,8 +93,8 @@ pub fn handle<S: Storage, A: Api, Q: Querier>(
     if config.is_stopped {
         return match msg {
             HandleMsg::Redeem { amount } => redeem(deps, env, amount),
+            HandleMsg::EmergencyRedeem {} => emergency_redeem(deps, env),
             HandleMsg::ResumeContract {} => resume_contract(deps, env),
-            // TODO: Add more messages here
             _ => Err(StdError::generic_err(
                 "This contract is stopped and this action is not allowed",
             )),
@@ -193,7 +197,7 @@ fn lock_tokens<S: Storage, A: Api, Q: Querier>(
     if env.message.sender != config.inc_token.address {
         return Err(StdError::generic_err(format!(
             "This token is not supported. Supported: {}, given: {}",
-            env.message.sender, config.inc_token.address
+            config.inc_token.address, env.message.sender
         )));
     }
 
@@ -232,7 +236,7 @@ fn lock_tokens<S: Storage, A: Api, Q: Querier>(
     Ok(HandleResponse {
         messages,
         log: vec![],
-        data: Some(to_binary(&HandleAnswer::LockTokens { status: Success })?),
+        data: Some(to_binary(&HandleAnswer::LockTokens { status: Success })?), // Returning data because `messages` is possibly empty
     })
 }
 
@@ -309,7 +313,7 @@ fn redeem<S: Storage, A: Api, Q: Querier>(
     TypedStoreMut::attach(&mut deps.storage).store(REWARD_POOL_KEY, &reward_pool)?;
 
     messages.push(secret_toolkit::snip20::transfer_msg(
-        env.message.sender.clone(),
+        env.message.sender,
         Uint128(amount * INC_TOKEN_SCALE),
         None,
         RESPONSE_BLOCK_SIZE,
@@ -505,6 +509,38 @@ fn change_admin<S: Storage, A: Api, Q: Querier>(
     })
 }
 
+/// YOU SHOULD NEVER USE THIS! This will erase any eligibility for rewards you earned so far
+fn emergency_redeem<S: Storage, A: Api, Q: Querier>(
+    deps: &mut Extern<S, A, Q>,
+    env: Env,
+) -> StdResult<HandleResponse> {
+    let config: Config = TypedStore::attach(&deps.storage).load(CONFIG_KEY)?;
+    let mut user: UserInfo = TypedStoreMut::attach(&mut deps.storage)
+        .load(env.message.sender.0.as_bytes())
+        .unwrap_or(UserInfo { locked: 0, debt: 0 });
+
+    let mut messages = vec![];
+    if user.locked > 0 {
+        messages.push(secret_toolkit::snip20::transfer_msg(
+            env.message.sender.clone(),
+            Uint128(user.locked * INC_TOKEN_SCALE),
+            None,
+            RESPONSE_BLOCK_SIZE,
+            config.inc_token.contract_hash,
+            config.inc_token.address,
+        )?);
+    }
+
+    user = UserInfo { locked: 0, debt: 0 };
+    TypedStoreMut::attach(&mut deps.storage).store(env.message.sender.0.as_bytes(), &user)?;
+
+    Ok(HandleResponse {
+        messages,
+        log: vec![],
+        data: None,
+    })
+}
+
 // Query functions
 
 fn query_pending_rewards<S: Storage, A: Api, Q: Querier>(
@@ -615,7 +651,8 @@ fn update_rewards<S: Storage, A: Api, Q: Querier>(
     let mut rewards_store = TypedStoreMut::attach(&mut deps.storage);
     let mut reward_pool: RewardPool = rewards_store.load(REWARD_POOL_KEY)?;
 
-    if env.block.height <= reward_pool.last_reward_block || env.block.height > config.end_by_height
+    if env.block.height <= reward_pool.last_reward_block
+        || reward_pool.last_reward_block > config.end_by_height
     {
         return Ok(reward_pool);
     }
@@ -628,10 +665,10 @@ fn update_rewards<S: Storage, A: Api, Q: Querier>(
 
     let blocks_to_go = config.end_by_height - reward_pool.last_reward_block;
     let blocks_to_vest = env.block.height - reward_pool.last_reward_block;
-    let rewards = blocks_to_vest as u128 * (reward_pool.pending_rewards / (blocks_to_go as u128));
+    let rewards = (blocks_to_vest as u128) * reward_pool.pending_rewards / (blocks_to_go as u128);
 
     reward_pool.acc_reward_per_share += rewards * REWARD_SCALE / reward_pool.inc_token_supply;
-
+    reward_pool.pending_rewards -= rewards;
     reward_pool.last_reward_block = env.block.height;
     rewards_store.store(REWARD_POOL_KEY, &reward_pool)?;
 
