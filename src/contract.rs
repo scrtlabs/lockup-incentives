@@ -28,8 +28,8 @@ pub fn init<S: Storage, A: Api, Q: Querier>(
             admin: env.message.sender.clone(),
             reward_token: msg.reward_token.clone(),
             inc_token: msg.inc_token.clone(),
-            pool_claim_height: msg.pool_claim_block,
-            end_by_height: msg.end_by_height,
+            pool_claim_height: msg.pool_claim_block.u128() as u64,
+            end_by_height: msg.end_by_height.u128() as u64,
             viewing_key: msg.viewing_key.clone(),
             prng_seed: prng_seed_hashed.to_vec(),
             is_stopped: false,
@@ -616,7 +616,7 @@ fn query_end_height<S: Storage, A: Api, Q: Querier>(deps: &Extern<S, A, Q>) -> S
     let config: Config = TypedStore::attach(&deps.storage).load(CONFIG_KEY)?;
 
     to_binary(&QueryAnswer::QueryEndHeight {
-        height: config.end_by_height,
+        height: Uint128(config.end_by_height as u128),
     })
 }
 
@@ -626,7 +626,7 @@ fn query_last_reward_block<S: Storage, A: Api, Q: Querier>(
     let reward_pool: RewardPool = TypedStore::attach(&deps.storage).load(REWARD_POOL_KEY)?;
 
     to_binary(&QueryAnswer::QueryEndHeight {
-        height: reward_pool.last_reward_block,
+        height: Uint128(reward_pool.last_reward_block as u128),
     })
 }
 

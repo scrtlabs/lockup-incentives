@@ -8,8 +8,8 @@ use serde::{Deserialize, Serialize};
 pub struct InitMsg {
     pub reward_token: Snip20,
     pub inc_token: Snip20,
-    pub end_by_height: u64,
-    pub pool_claim_block: u64,
+    pub end_by_height: Uint128,
+    pub pool_claim_block: Uint128,
     pub viewing_key: String,
     pub prng_seed: Binary,
 }
@@ -107,8 +107,8 @@ pub enum QueryAnswer {
     QueryContractStatus { is_stopped: bool },
     QueryRewardToken { token: Snip20 },
     QueryIncentivizedToken { token: Snip20 },
-    QueryEndHeight { height: u64 },
-    QueryLastRewardBlock { height: u64 },
+    QueryEndHeight { height: Uint128 },
+    QueryLastRewardBlock { height: Uint128 },
 
     QueryError { msg: String },
 }

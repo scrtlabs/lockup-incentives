@@ -13,3 +13,7 @@
 # IDEs
 *.iml
 .idea
+
+# Binaries
+contract.wasm
+contract.wasm.gz
