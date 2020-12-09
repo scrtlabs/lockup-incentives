@@ -132,6 +132,7 @@ pub fn query<S: Storage, A: Api, Q: Querier>(
         QueryMsg::QueryEndHeight {} => query_end_height(deps),
         QueryMsg::QueryLastRewardBlock {} => query_last_reward_block(deps),
         QueryMsg::QueryRewardPoolBalance {} => query_reward_pool_balance(deps),
+        QueryMsg::TokenInfo {} => query_token_info(),
         _ => authenticated_queries(deps, msg),
     };
 
@@ -676,6 +677,16 @@ fn query_reward_pool_balance<S: Storage, A: Api, Q: Querier>(
 
     to_binary(&QueryAnswer::QueryRewardPoolBalance {
         balance: Uint128(reward_pool.pending_rewards as u128),
+    })
+}
+
+// This is only for Keplr support (Viewing Keys)
+fn query_token_info() -> StdResult<Binary> {
+    to_binary(&QueryAnswer::TokenInfo {
+        name: "ETH Bridge Rewards".to_string(),
+        symbol: "ETH-RWRDS".to_string(),
+        decimals: 1,
+        total_supply: None,
     })
 }
 

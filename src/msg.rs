@@ -66,7 +66,6 @@ pub enum HandleAnswer {
     LockTokens { status: ResponseStatus },
     AddToRewardPool { status: ResponseStatus },
     Redeem { status: ResponseStatus },
-    WithdrawRewards { status: ResponseStatus },
     CreateViewingKey { key: ViewingKey },
     SetViewingKey { status: ResponseStatus },
     UpdateIncentivizedToken { status: ResponseStatus },
@@ -80,6 +79,7 @@ pub enum HandleAnswer {
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum QueryMsg {
+    TokenInfo {},
     QueryUnlockClaimHeight {},
     QueryContractStatus {},
     QueryRewardToken {},
@@ -113,17 +113,43 @@ impl QueryMsg {
 #[derive(Serialize, Deserialize, JsonSchema, Debug)]
 #[serde(rename_all = "snake_case")]
 pub enum QueryAnswer {
-    QueryRewards { rewards: Uint128 },
-    QueryDeposit { deposit: Uint128 },
-    QueryUnlockClaimHeight { height: Uint128 },
-    QueryContractStatus { is_stopped: bool },
-    QueryRewardToken { token: Snip20 },
-    QueryIncentivizedToken { token: Snip20 },
-    QueryEndHeight { height: Uint128 },
-    QueryLastRewardBlock { height: Uint128 },
-    QueryRewardPoolBalance { balance: Uint128 },
+    TokenInfo {
+        name: String,
+        symbol: String,
+        decimals: u8,
+        total_supply: Option<Uint128>,
+    },
+    QueryRewards {
+        rewards: Uint128,
+    },
+    QueryDeposit {
+        deposit: Uint128,
+    },
+    QueryUnlockClaimHeight {
+        height: Uint128,
+    },
+    QueryContractStatus {
+        is_stopped: bool,
+    },
+    QueryRewardToken {
+        token: Snip20,
+    },
+    QueryIncentivizedToken {
+        token: Snip20,
+    },
+    QueryEndHeight {
+        height: Uint128,
+    },
+    QueryLastRewardBlock {
+        height: Uint128,
+    },
+    QueryRewardPoolBalance {
+        balance: Uint128,
+    },
 
-    QueryError { msg: String },
+    QueryError {
+        msg: String,
+    },
 }
 
 #[derive(Serialize, Deserialize, Clone, PartialEq, JsonSchema, Debug)]
