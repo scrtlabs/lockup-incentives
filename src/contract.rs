@@ -2,7 +2,7 @@ use cosmwasm_std::{
     from_binary, to_binary, Api, Binary, CosmosMsg, Env, Extern, HandleResponse, HumanAddr,
     InitResponse, Querier, ReadonlyStorage, StdError, StdResult, Storage, Uint128,
 };
-use cosmwasm_storage::{PrefixedStorage, ReadonlyPrefixedStorage};
+use cosmwasm_storage::{PrefixedStorage, ReadonlyPrefixedStorage, TypedStorage};
 use secret_toolkit::crypto::sha_256;
 use secret_toolkit::snip20;
 use secret_toolkit::storage::{TypedStore, TypedStoreMut};
@@ -29,7 +29,7 @@ pub fn init<S: Storage, A: Api, Q: Querier>(
             reward_token: msg.reward_token.clone(),
             inc_token: msg.inc_token.clone(),
             pool_claim_height: msg.pool_claim_block.u128() as u64,
-            end_by_height: msg.end_by_height.u128() as u64,
+            deadline: msg.deadline.u128() as u64,
             viewing_key: msg.viewing_key.clone(),
             prng_seed: prng_seed_hashed.to_vec(),
             is_stopped: false,
@@ -113,6 +113,7 @@ pub fn handle<S: Storage, A: Api, Q: Querier>(
         HandleMsg::ClaimRewardPool { recipient } => claim_reward_pool(deps, env, recipient),
         HandleMsg::StopContract {} => stop_contract(deps, env),
         HandleMsg::ChangeAdmin { address } => change_admin(deps, env, address),
+        HandleMsg::UpdateDeadline { height } => update_deadline(deps, env, height),
         _ => Err(StdError::generic_err("Unavailable or unknown action")),
     };
 
@@ -130,6 +131,7 @@ pub fn query<S: Storage, A: Api, Q: Querier>(
         QueryMsg::QueryIncentivizedToken {} => query_incentivized_token(deps),
         QueryMsg::QueryEndHeight {} => query_end_height(deps),
         QueryMsg::QueryLastRewardBlock {} => query_last_reward_block(deps),
+        QueryMsg::QueryRewardPoolBalance {} => query_reward_pool_balance(deps),
         _ => authenticated_queries(deps, msg),
     };
 
@@ -151,7 +153,9 @@ pub fn authenticated_queries<S: Storage, A: Api, Q: Querier>(
         key.check_viewing_key(&[0u8; VIEWING_KEY_SIZE]);
     } else if key.check_viewing_key(expected_key.unwrap().as_slice()) {
         return match msg {
-            QueryMsg::QueryRewards { address, .. } => query_pending_rewards(deps, &address),
+            QueryMsg::QueryRewards {
+                address, height, ..
+            } => query_pending_rewards(deps, &address, height.u128() as u64),
             QueryMsg::QueryDeposit { address, .. } => query_deposit(deps, &address),
             _ => panic!("This should never happen"),
         };
@@ -249,7 +253,7 @@ fn add_to_pool<S: Storage, A: Api, Q: Querier>(
     if env.message.sender != config.reward_token.address {
         return Err(StdError::generic_err(format!(
             "This token is not supported. Supported: {}, given: {}",
-            env.message.sender, config.inc_token.address
+            config.reward_token.address, env.message.sender
         )));
     }
 
@@ -541,23 +545,58 @@ fn emergency_redeem<S: Storage, A: Api, Q: Querier>(
     })
 }
 
+fn update_deadline<S: Storage, A: Api, Q: Querier>(
+    deps: &mut Extern<S, A, Q>,
+    env: Env,
+    height: u64,
+) -> StdResult<HandleResponse> {
+    let mut config = TypedStore::<Config, S>::attach(&deps.storage).load(CONFIG_KEY)?;
+
+    enforce_admin(config.clone(), env.clone())?;
+    update_rewards(deps, &env, &config)?;
+
+    config.deadline = height;
+
+    Ok(HandleResponse {
+        messages: vec![],
+        log: vec![],
+        data: Some(to_binary(&HandleAnswer::UpdateDeadline {
+            status: Success,
+        })?),
+    })
+}
+
 // Query functions
 
 fn query_pending_rewards<S: Storage, A: Api, Q: Querier>(
     deps: &Extern<S, A, Q>,
     address: &HumanAddr,
+    height: u64,
 ) -> StdResult<Binary> {
     let reward_pool = TypedStore::<RewardPool, S>::attach(&deps.storage).load(REWARD_POOL_KEY)?;
     let user = TypedStore::<UserInfo, S>::attach(&deps.storage)
         .load(address.0.as_bytes())
         .unwrap_or(UserInfo { locked: 0, debt: 0 });
+    let config = TypedStore::<Config, S>::attach(&deps.storage).load(CONFIG_KEY)?;
+    let mut acc_reward_per_share = reward_pool.acc_reward_per_share;
+
+    if height > reward_pool.last_reward_block && reward_pool.inc_token_supply != 0 {
+        let mut height = height;
+        if height > config.deadline {
+            height = config.deadline;
+        }
+        let blocks_to_go = config.deadline - reward_pool.last_reward_block;
+        let blocks_to_vest = height - reward_pool.last_reward_block;
+        let rewards =
+            (blocks_to_vest as u128) * reward_pool.pending_rewards / (blocks_to_go as u128);
+
+        acc_reward_per_share += rewards * REWARD_SCALE / reward_pool.inc_token_supply;
+    }
 
     to_binary(&QueryAnswer::QueryRewards {
-        // This returns the pending reward for the last time the rewards got updated (not block-by-block accurate,
-        // because we don't have block height data on queries).
-        // For block-by-block accurate calculations, a user will have to query the data and perform calculations
-        // on his own (similar to `update_rewards()`).
-        rewards: Uint128(user.locked * reward_pool.acc_reward_per_share / REWARD_SCALE - user.debt),
+        // This is not necessarily accurate, since we don't validate the block height. It is up to
+        // the UI to display accurate numbers
+        rewards: Uint128(user.locked * acc_reward_per_share / REWARD_SCALE - user.debt),
     })
 }
 
@@ -565,12 +604,12 @@ fn query_deposit<S: Storage, A: Api, Q: Querier>(
     deps: &Extern<S, A, Q>,
     address: &HumanAddr,
 ) -> StdResult<Binary> {
-    let user: UserInfo = TypedStore::attach(&deps.storage)
+    let user = TypedStore::attach(&deps.storage)
         .load(address.0.as_bytes())
         .unwrap_or(UserInfo { locked: 0, debt: 0 });
 
     to_binary(&QueryAnswer::QueryDeposit {
-        deposit: Uint128(user.locked),
+        deposit: Uint128(user.locked * INC_TOKEN_SCALE),
     })
 }
 
@@ -616,7 +655,7 @@ fn query_end_height<S: Storage, A: Api, Q: Querier>(deps: &Extern<S, A, Q>) -> S
     let config: Config = TypedStore::attach(&deps.storage).load(CONFIG_KEY)?;
 
     to_binary(&QueryAnswer::QueryEndHeight {
-        height: Uint128(config.end_by_height as u128),
+        height: Uint128(config.deadline as u128),
     })
 }
 
@@ -627,6 +666,16 @@ fn query_last_reward_block<S: Storage, A: Api, Q: Querier>(
 
     to_binary(&QueryAnswer::QueryEndHeight {
         height: Uint128(reward_pool.last_reward_block as u128),
+    })
+}
+
+fn query_reward_pool_balance<S: Storage, A: Api, Q: Querier>(
+    deps: &Extern<S, A, Q>,
+) -> StdResult<Binary> {
+    let reward_pool: RewardPool = TypedStore::attach(&deps.storage).load(REWARD_POOL_KEY)?;
+
+    to_binary(&QueryAnswer::QueryRewardPoolBalance {
+        balance: Uint128(reward_pool.pending_rewards as u128),
     })
 }
 
@@ -652,7 +701,7 @@ fn update_rewards<S: Storage, A: Api, Q: Querier>(
     let mut reward_pool: RewardPool = rewards_store.load(REWARD_POOL_KEY)?;
 
     if env.block.height <= reward_pool.last_reward_block
-        || reward_pool.last_reward_block > config.end_by_height
+        || reward_pool.last_reward_block > config.deadline
     {
         return Ok(reward_pool);
     }
@@ -663,7 +712,7 @@ fn update_rewards<S: Storage, A: Api, Q: Querier>(
         return Ok(reward_pool);
     }
 
-    let blocks_to_go = config.end_by_height - reward_pool.last_reward_block;
+    let blocks_to_go = config.deadline - reward_pool.last_reward_block;
     let blocks_to_vest = env.block.height - reward_pool.last_reward_block;
     let rewards = (blocks_to_vest as u128) * reward_pool.pending_rewards / (blocks_to_go as u128);
 
@@ -678,9 +727,195 @@ fn update_rewards<S: Storage, A: Api, Q: Querier>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cosmwasm_std::testing::{mock_dependencies, mock_env};
-    use cosmwasm_std::{coins, from_binary, StdError};
+    use crate::msg::HandleMsg::{LockTokens, Receive, SetViewingKey};
+    use crate::msg::QueryMsg::QueryRewards;
+    use cosmwasm_std::testing::{
+        mock_dependencies, MockApi, MockQuerier, MockStorage, MOCK_CONTRACT_ADDR,
+    };
+    use cosmwasm_std::{coins, from_binary, BlockInfo, Coin, ContractInfo, MessageInfo, StdError};
+
+    // Helper functions
+
+    fn init_helper() -> (
+        StdResult<InitResponse>,
+        Extern<MockStorage, MockApi, MockQuerier>,
+    ) {
+        let mut deps = mock_dependencies(20, &[]);
+        let env = mock_env("instantiator", &[], 1);
+
+        let init_msg = InitMsg {
+            reward_token: Snip20 {
+                address: HumanAddr("scrt".to_string()),
+                contract_hash: "1".to_string(),
+            },
+            inc_token: Snip20 {
+                address: HumanAddr("eth".to_string()),
+                contract_hash: "2".to_string(),
+            },
+            deadline: Uint128(123456789),
+            pool_claim_block: Uint128(123456789),
+            prng_seed: Binary::from("lolz fun yay".as_bytes()),
+            viewing_key: "123".to_string(),
+        };
+
+        (init(&mut deps, env, init_msg), deps)
+    }
+
+    /// Just set sender and sent funds for the message. The rest uses defaults.
+    /// The sender will be canonicalized internally to allow developers pasing in human readable senders.
+    /// This is intended for use in test code only.
+    pub fn mock_env<U: Into<HumanAddr>>(sender: U, sent: &[Coin], height: u64) -> Env {
+        Env {
+            block: BlockInfo {
+                height,
+                time: 1_571_797_419,
+                chain_id: "cosmos-testnet-14002".to_string(),
+            },
+            message: MessageInfo {
+                sender: sender.into(),
+                sent_funds: sent.to_vec(),
+            },
+            contract: ContractInfo {
+                address: HumanAddr::from(MOCK_CONTRACT_ADDR),
+            },
+            contract_key: Some("".to_string()),
+            contract_code_hash: "".to_string(),
+        }
+    }
+
+    // Tests
 
     #[test]
-    fn proper_initialization() {}
+    fn test_sanity() {
+        let (init_result, mut deps) = init_helper();
+
+        add_to_pool(&mut deps, mock_env("scrt", &[], 1), 500000_000000).unwrap(); // 500,000 scrt
+        lock_tokens(
+            &mut deps,
+            mock_env("eth", &[], 2),
+            HumanAddr("alice".to_string()),
+            1_000000000000000000,
+        )
+        .unwrap();
+
+        let config = TypedStore::<Config, MockStorage>::attach(&deps.storage)
+            .load(CONFIG_KEY)
+            .unwrap();
+        let reward_pool = update_rewards(&mut deps, &mock_env("alice", &[], 2), &config).unwrap();
+        println!("{:?}", reward_pool);
+        let pending = query_pending_rewards(&deps, &HumanAddr("alice".to_string()), 2).unwrap();
+        println!("{:?}", String::from_utf8_lossy(&pending.0));
+
+        println!();
+        println!("Alice on block 3:");
+        let reward_pool = update_rewards(&mut deps, &mock_env("alice", &[], 3), &config).unwrap();
+        println!("{:?}", reward_pool);
+        let pending = query_pending_rewards(&deps, &HumanAddr("alice".to_string()), 3).unwrap();
+        println!("{:?}", String::from_utf8_lossy(&pending.0));
+
+        println!();
+        println!("Alice on block 4:");
+        let reward_pool = update_rewards(&mut deps, &mock_env("alice", &[], 4), &config).unwrap();
+        println!("{:?}", reward_pool);
+        let pending = query_pending_rewards(&deps, &HumanAddr("alice".to_string()), 4).unwrap();
+        println!("{:?}", String::from_utf8_lossy(&pending.0));
+
+        println!();
+        println!("====== bob locks tokens ======");
+
+        let receive_msg = Receive {
+            sender: HumanAddr("bob".to_string()),
+            from: HumanAddr("bob".to_string()),
+            amount: Uint128(1000_000000000000000000),
+            msg: to_binary(&LockTokens {}).unwrap(),
+        };
+        handle(&mut deps, mock_env("eth", &[], 4), receive_msg).unwrap();
+
+        // lock_tokens(
+        //     &mut deps,
+        //     mock_env("eth", &[], 4),
+        //     HumanAddr("bob".to_string()),
+        //     1000_000000000000000000,
+        // )
+        // .unwrap();
+
+        println!();
+        println!("Alice on block 5:");
+        let reward_pool = update_rewards(&mut deps, &mock_env("alice", &[], 5), &config).unwrap();
+        println!("{:?}", reward_pool);
+        let pending = query_pending_rewards(&deps, &HumanAddr("alice".to_string()), 5).unwrap();
+        println!("{:?}", String::from_utf8_lossy(&pending.0));
+
+        println!();
+        println!("Bob on block 5:");
+        let reward_pool = update_rewards(&mut deps, &mock_env("alice", &[], 5), &config).unwrap();
+        println!("{:?}", reward_pool);
+        let pending = query_pending_rewards(&deps, &HumanAddr("bob".to_string()), 5).unwrap();
+        println!("{:?}", String::from_utf8_lossy(&pending.0));
+
+        println!();
+        println!("===== Doubled the pool =====");
+        add_to_pool(&mut deps, mock_env("scrt", &[], 5), 500000_000000).unwrap(); // 500,000 scrt
+
+        println!();
+        println!("Alice on block 6:");
+        let reward_pool = update_rewards(&mut deps, &mock_env("alice", &[], 6), &config).unwrap();
+        println!("{:?}", reward_pool);
+        let pending = query_pending_rewards(&deps, &HumanAddr("alice".to_string()), 6).unwrap();
+        println!("{:?}", String::from_utf8_lossy(&pending.0));
+
+        println!();
+        println!("Bob on block 6:");
+        let reward_pool = update_rewards(&mut deps, &mock_env("alice", &[], 6), &config).unwrap();
+        println!("{:?}", reward_pool);
+        let pending = query_pending_rewards(&deps, &HumanAddr("bob".to_string()), 6).unwrap();
+        println!("{:?}", String::from_utf8_lossy(&pending.0));
+
+        println!();
+        println!("Alice on block 2000:");
+        let reward_pool =
+            update_rewards(&mut deps, &mock_env("alice", &[], 2000), &config).unwrap();
+        println!("{:?}", reward_pool);
+        let pending = query_pending_rewards(&deps, &HumanAddr("alice".to_string()), 2000).unwrap();
+        println!("{:?}", String::from_utf8_lossy(&pending.0));
+
+        println!();
+        println!("Bob on block 2000:");
+        let reward_pool =
+            update_rewards(&mut deps, &mock_env("alice", &[], 2000), &config).unwrap();
+        println!("{:?}", reward_pool);
+        let pending = query_pending_rewards(&deps, &HumanAddr("bob".to_string()), 2000).unwrap();
+        println!("{:?}", String::from_utf8_lossy(&pending.0));
+
+        let vk_msg = SetViewingKey {
+            key: "123".to_string(),
+            padding: None,
+        };
+        handle(&mut deps, mock_env("bob".to_string(), &[], 2001), vk_msg).unwrap();
+        let query_msg = QueryRewards {
+            address: HumanAddr("bob".to_string()),
+            height: Uint128(2001),
+            key: "123".to_string(),
+        };
+        let query_answer = query(&deps, query_msg).unwrap();
+        println!("{:?}", String::from_utf8_lossy(&query_answer.0));
+
+        println!("====== bob locks tokens ======");
+        let receive_msg = Receive {
+            sender: HumanAddr("bob".to_string()),
+            from: HumanAddr("bob".to_string()),
+            amount: Uint128(1000_000000000000000000),
+            msg: to_binary(&LockTokens {}).unwrap(),
+        };
+        handle(&mut deps, mock_env("eth", &[], 2002), receive_msg).unwrap();
+        let query_msg = QueryRewards {
+            address: HumanAddr("bob".to_string()),
+            height: Uint128(2003),
+            key: "123".to_string(),
+        };
+        let query_answer = query(&deps, query_msg).unwrap();
+        println!("{:?}", String::from_utf8_lossy(&query_answer.0));
+
+        assert_eq!("", "");
+    }
 }

@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 pub struct InitMsg {
     pub reward_token: Snip20,
     pub inc_token: Snip20,
-    pub end_by_height: Uint128,
+    pub deadline: Uint128,
     pub pool_claim_block: Uint128,
     pub viewing_key: String,
     pub prng_seed: Binary,
@@ -47,6 +47,9 @@ pub enum HandleMsg {
     UpdateRewardToken {
         new_token: Snip20,
     },
+    UpdateDeadline {
+        height: u64,
+    },
     ClaimRewardPool {
         recipient: Option<HumanAddr>,
     },
@@ -71,6 +74,7 @@ pub enum HandleAnswer {
     StopContract { status: ResponseStatus },
     ResumeContract { status: ResponseStatus },
     ChangeAdmin { status: ResponseStatus },
+    UpdateDeadline { status: ResponseStatus },
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
@@ -82,16 +86,24 @@ pub enum QueryMsg {
     QueryIncentivizedToken {},
     QueryEndHeight {},
     QueryLastRewardBlock {},
+    QueryRewardPoolBalance {},
 
     // Authenticated
-    QueryRewards { address: HumanAddr, key: String },
-    QueryDeposit { address: HumanAddr, key: String },
+    QueryRewards {
+        address: HumanAddr,
+        height: Uint128,
+        key: String,
+    },
+    QueryDeposit {
+        address: HumanAddr,
+        key: String,
+    },
 }
 
 impl QueryMsg {
     pub fn get_validation_params(&self) -> (&HumanAddr, ViewingKey) {
         match self {
-            QueryMsg::QueryRewards { address, key } => (address, ViewingKey(key.clone())),
+            QueryMsg::QueryRewards { address, key, .. } => (address, ViewingKey(key.clone())),
             QueryMsg::QueryDeposit { address, key } => (address, ViewingKey(key.clone())),
             _ => panic!("This should never happen"),
         }
@@ -109,6 +121,7 @@ pub enum QueryAnswer {
     QueryIncentivizedToken { token: Snip20 },
     QueryEndHeight { height: Uint128 },
     QueryLastRewardBlock { height: Uint128 },
+    QueryRewardPoolBalance { balance: Uint128 },
 
     QueryError { msg: String },
 }

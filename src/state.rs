@@ -20,7 +20,7 @@ pub struct Config {
     pub reward_token: Snip20,
     pub inc_token: Snip20,
     pub pool_claim_height: u64,
-    pub end_by_height: u64,
+    pub deadline: u64,
     pub viewing_key: String,
     pub prng_seed: Vec<u8>,
     pub is_stopped: bool,
