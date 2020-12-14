@@ -739,6 +739,9 @@ mod tests {
         coins, from_binary, BlockInfo, Coin, ContractInfo, Empty, MessageInfo, StdError, WasmMsg,
     };
     use rand::Rng;
+    use serde::{Deserialize, Serialize};
+
+    const DEADLINE: u64 = 1_500_000;
 
     // Helper functions
 
@@ -758,8 +761,8 @@ mod tests {
                 address: HumanAddr("eth".to_string()),
                 contract_hash: "2".to_string(),
             },
-            deadline: 100_500_000,
-            pool_claim_block: 1_501_000,
+            deadline: DEADLINE,
+            pool_claim_block: DEADLINE + 1,
             prng_seed: Binary::from("lolz fun yay".as_bytes()),
             viewing_key: "123".to_string(),
         };
@@ -879,23 +882,56 @@ mod tests {
         }
     }
 
+    fn extract_rewards(result: StdResult<HandleResponse>) -> u128 {
+        match result {
+            Ok(resp) => {
+                for message in resp.messages {
+                    match message {
+                        CosmosMsg::Wasm(w) => match w {
+                            WasmMsg::Execute {
+                                contract_addr, msg, ..
+                            } => {
+                                if contract_addr == HumanAddr("scrt".to_string()) {
+                                    let transfer_msg: Snip20HandleMsg = from_binary(&msg).unwrap();
+
+                                    match transfer_msg {
+                                        Snip20HandleMsg::Transfer { amount, .. } => {
+                                            return amount.u128();
+                                        }
+                                        _ => panic!(),
+                                    }
+                                }
+                            }
+                            _ => panic!(),
+                        },
+                        _ => panic!(),
+                    }
+                }
+            }
+            Err(e) => match e {
+                StdError::NotFound { .. } => {}
+                StdError::GenericErr { msg, backtrace } => {
+                    if !msg.contains("insufficient") {
+                        panic!(format!("{}", msg))
+                    }
+                }
+                _ => panic!(format!("{:?}", e)),
+            },
+        }
+
+        0
+    }
+
     // Tests
 
     #[test]
     fn simulation() {
         let mut rng = rand::thread_rng();
 
-        for _ in 0..5 {
+        for _ in 0..1 {
             let (init_result, mut deps) = init_helper();
 
             deposit_rewards(&mut deps, mock_env("scrt", &[], 1), 500_000_000000).unwrap(); // 500,000 scrt
-            deposit(
-                &mut deps,
-                mock_env("eth", &[], 2),
-                HumanAddr("alice".to_string()),
-                1_000000000000000000,
-            )
-            .unwrap();
 
             let actions = vec!["deposit", "redeem"];
             let users = vec![
@@ -909,7 +945,7 @@ mod tests {
             let mut total_rewards_output = 0;
 
             set_vks(&mut deps, users.clone());
-            for block in 1..1_600_001 as u64 {
+            for block in 2..DEADLINE + 10_000 {
                 let num_of_actions = rng.gen_range(0, 5);
 
                 for i in 0..num_of_actions {
@@ -920,34 +956,7 @@ mod tests {
 
                     let (msg, sender) = msg_from_action(actions[action_idx], user.clone());
                     let result = handle(&mut deps, mock_env(sender, &[], block), msg);
-                    match result {
-                        Ok(resp) => match resp.messages[0].clone() {
-                            CosmosMsg::Wasm(w) => match w {
-                                WasmMsg::Execute { msg, .. } => {
-                                    let transfer_msg: snip20::HandleMsg =
-                                        from_binary(&msg).unwrap();
-
-                                    match transfer_msg {
-                                        snip20::HandleMsg::Transfer { amount, .. } => {
-                                            total_rewards_output += amount.u128();
-                                        }
-                                        _ => panic!(),
-                                    }
-                                }
-                                _ => panic!(),
-                            },
-                            _ => panic!(),
-                        },
-                        Err(e) => match e {
-                            StdError::NotFound { .. } => {}
-                            StdError::GenericErr { msg, backtrace } => {
-                                if !msg.contains("insufficient") {
-                                    panic!(format!("{}", msg))
-                                }
-                            }
-                            _ => panic!(format!("{:?}", e)),
-                        },
-                    }
+                    total_rewards_output += extract_rewards(result);
                 }
 
                 if block % 10000 == 0 {
@@ -955,7 +964,27 @@ mod tests {
                 }
             }
 
-            assert_eq!(total_rewards_output, 500_000_000000);
+            // Make sure all users are fully redeemed
+            for user in users {
+                let redeem_msg = HandleMsg::Redeem { amount: None };
+                let result = handle(&mut deps, mock_env(user.0, &[], 1_700_000), redeem_msg);
+                total_rewards_output += extract_rewards(result);
+            }
+
+            let error = 1.0 - (total_rewards_output as f64 / 500_000_000000.0);
+            assert!(error < 0.005, format!("{}", error));
         }
+    }
+
+    /// SNIP20 token handle messages
+    #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+    #[serde(rename_all = "snake_case")]
+    pub enum Snip20HandleMsg {
+        // Basic SNIP20 functions
+        Transfer {
+            recipient: HumanAddr,
+            amount: Uint128,
+            padding: Option<String>,
+        },
     }
 }
