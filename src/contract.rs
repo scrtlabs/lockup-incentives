@@ -2,7 +2,7 @@ use cosmwasm_std::{
     from_binary, to_binary, Api, Binary, CosmosMsg, Env, Extern, HandleResponse, HumanAddr,
     InitResponse, Querier, ReadonlyStorage, StdError, StdResult, Storage, Uint128,
 };
-use cosmwasm_storage::{PrefixedStorage, ReadonlyPrefixedStorage, TypedStorage};
+use cosmwasm_storage::{PrefixedStorage, ReadonlyPrefixedStorage};
 use secret_toolkit::crypto::sha_256;
 use secret_toolkit::snip20;
 use secret_toolkit::storage::{TypedStore, TypedStoreMut};
@@ -10,7 +10,9 @@ use secret_toolkit::utils::{pad_handle_result, pad_query_result};
 
 use crate::constants::*;
 use crate::msg::ResponseStatus::Success;
-use crate::msg::{HandleAnswer, HandleMsg, InitMsg, QueryAnswer, QueryMsg};
+use crate::msg::{
+    HandleAnswer, HandleMsg, InitMsg, QueryAnswer, QueryMsg, ReceiveAnswer, ReceiveMsg,
+};
 use crate::state::{Config, RewardPool, Snip20, UserInfo};
 use crate::viewing_key::{ViewingKey, VIEWING_KEY_SIZE};
 
@@ -28,8 +30,8 @@ pub fn init<S: Storage, A: Api, Q: Querier>(
             admin: env.message.sender.clone(),
             reward_token: msg.reward_token.clone(),
             inc_token: msg.inc_token.clone(),
-            pool_claim_height: msg.pool_claim_block.u128() as u64,
-            deadline: msg.deadline.u128() as u64,
+            pool_claim_block: msg.pool_claim_block,
+            deadline: msg.deadline,
             viewing_key: msg.viewing_key.clone(),
             prng_seed: prng_seed_hashed.to_vec(),
             is_stopped: false,
@@ -108,12 +110,16 @@ pub fn handle<S: Storage, A: Api, Q: Querier>(
         } => receive(deps, env, from, amount.u128(), msg),
         HandleMsg::CreateViewingKey { entropy, .. } => create_viewing_key(deps, env, entropy),
         HandleMsg::SetViewingKey { key, .. } => set_viewing_key(deps, env, key),
-        HandleMsg::UpdateIncentivizedToken { new_token } => update_inc_token(deps, env, new_token),
-        HandleMsg::UpdateRewardToken { new_token } => update_reward_token(deps, env, new_token),
-        HandleMsg::ClaimRewardPool { recipient } => claim_reward_pool(deps, env, recipient),
+        HandleMsg::UpdateIncentivizedToken { token: new_token } => {
+            update_inc_token(deps, env, new_token)
+        }
+        HandleMsg::UpdateRewardToken { token: new_token } => {
+            update_reward_token(deps, env, new_token)
+        }
+        HandleMsg::ClaimRewardPool { to: recipient } => claim_reward_pool(deps, env, recipient),
         HandleMsg::StopContract {} => stop_contract(deps, env),
         HandleMsg::ChangeAdmin { address } => change_admin(deps, env, address),
-        HandleMsg::UpdateDeadline { height } => update_deadline(deps, env, height),
+        HandleMsg::SetDeadline { block: height } => set_deadline(deps, env, height),
         _ => Err(StdError::generic_err("Unavailable or unknown action")),
     };
 
@@ -125,13 +131,12 @@ pub fn query<S: Storage, A: Api, Q: Querier>(
     msg: QueryMsg,
 ) -> StdResult<Binary> {
     let response = match msg {
-        QueryMsg::QueryUnlockClaimHeight {} => query_claim_unlock_height(deps),
-        QueryMsg::QueryContractStatus {} => query_contract_status(deps),
+        QueryMsg::ClaimBlock {} => query_claim_block(deps),
+        QueryMsg::ContractStatus {} => query_contract_status(deps),
         QueryMsg::QueryRewardToken {} => query_reward_token(deps),
-        QueryMsg::QueryIncentivizedToken {} => query_incentivized_token(deps),
-        QueryMsg::QueryEndHeight {} => query_end_height(deps),
-        QueryMsg::QueryLastRewardBlock {} => query_last_reward_block(deps),
-        QueryMsg::QueryRewardPoolBalance {} => query_reward_pool_balance(deps),
+        QueryMsg::IncentivizedToken {} => query_incentivized_token(deps),
+        QueryMsg::EndHeight {} => query_end_height(deps),
+        QueryMsg::RewardPoolBalance {} => query_reward_pool_balance(deps),
         QueryMsg::TokenInfo {} => query_token_info(),
         _ => authenticated_queries(deps, msg),
     };
@@ -154,10 +159,10 @@ pub fn authenticated_queries<S: Storage, A: Api, Q: Querier>(
         key.check_viewing_key(&[0u8; VIEWING_KEY_SIZE]);
     } else if key.check_viewing_key(expected_key.unwrap().as_slice()) {
         return match msg {
-            QueryMsg::QueryRewards {
+            QueryMsg::Rewards {
                 address, height, ..
-            } => query_pending_rewards(deps, &address, height.u128() as u64),
-            QueryMsg::QueryDeposit { address, .. } => query_deposit(deps, &address),
+            } => query_pending_rewards(deps, &address, height),
+            QueryMsg::Deposit { address, .. } => query_deposit(deps, &address),
             _ => panic!("This should never happen"),
         };
     }
@@ -176,22 +181,15 @@ fn receive<S: Storage, A: Api, Q: Querier>(
     amount: u128,
     msg: Binary,
 ) -> StdResult<HandleResponse> {
-    let msg: HandleMsg = from_binary(&msg)?;
-
-    if matches!(msg, HandleMsg::Receive { .. }) {
-        return Err(StdError::generic_err(
-            "Recursive call to receive() is not allowed",
-        ));
-    }
+    let msg: ReceiveMsg = from_binary(&msg)?;
 
     match msg {
-        HandleMsg::LockTokens {} => lock_tokens(deps, env, from, amount),
-        HandleMsg::AddToRewardPool {} => add_to_pool(deps, env, amount),
-        _ => Err(StdError::generic_err("Illegal internal receive message")),
+        ReceiveMsg::Deposit {} => deposit(deps, env, from, amount),
+        ReceiveMsg::DepositRewards {} => deposit_rewards(deps, env, amount),
     }
 }
 
-fn lock_tokens<S: Storage, A: Api, Q: Querier>(
+fn deposit<S: Storage, A: Api, Q: Querier>(
     deps: &mut Extern<S, A, Q>,
     env: Env,
     from: HumanAddr,
@@ -241,11 +239,11 @@ fn lock_tokens<S: Storage, A: Api, Q: Querier>(
     Ok(HandleResponse {
         messages,
         log: vec![],
-        data: Some(to_binary(&HandleAnswer::LockTokens { status: Success })?), // Returning data because `messages` is possibly empty
+        data: Some(to_binary(&ReceiveAnswer::Deposit { status: Success })?), // Returning data because `messages` is possibly empty
     })
 }
 
-fn add_to_pool<S: Storage, A: Api, Q: Querier>(
+fn deposit_rewards<S: Storage, A: Api, Q: Querier>(
     deps: &mut Extern<S, A, Q>,
     env: Env,
     amount: u128,
@@ -266,7 +264,7 @@ fn add_to_pool<S: Storage, A: Api, Q: Querier>(
     Ok(HandleResponse {
         messages: vec![],
         log: vec![],
-        data: Some(to_binary(&HandleAnswer::AddToRewardPool {
+        data: Some(to_binary(&ReceiveAnswer::DepositRewards {
             status: Success,
         })?),
     })
@@ -424,10 +422,10 @@ fn claim_reward_pool<S: Storage, A: Api, Q: Querier>(
 
     enforce_admin(config.clone(), env.clone())?;
 
-    if env.block.height < config.pool_claim_height {
+    if env.block.height < config.pool_claim_block {
         return Err(StdError::generic_err(format!(
             "minimum claim height hasn't passed yet: {}",
-            config.pool_claim_height
+            config.pool_claim_block
         )));
     }
 
@@ -546,7 +544,7 @@ fn emergency_redeem<S: Storage, A: Api, Q: Querier>(
     })
 }
 
-fn update_deadline<S: Storage, A: Api, Q: Querier>(
+fn set_deadline<S: Storage, A: Api, Q: Querier>(
     deps: &mut Extern<S, A, Q>,
     env: Env,
     height: u64,
@@ -561,9 +559,7 @@ fn update_deadline<S: Storage, A: Api, Q: Querier>(
     Ok(HandleResponse {
         messages: vec![],
         log: vec![],
-        data: Some(to_binary(&HandleAnswer::UpdateDeadline {
-            status: Success,
-        })?),
+        data: Some(to_binary(&HandleAnswer::SetDeadline { status: Success })?),
     })
 }
 
@@ -581,11 +577,15 @@ fn query_pending_rewards<S: Storage, A: Api, Q: Querier>(
     let config = TypedStore::<Config, S>::attach(&deps.storage).load(CONFIG_KEY)?;
     let mut acc_reward_per_share = reward_pool.acc_reward_per_share;
 
-    if height > reward_pool.last_reward_block && reward_pool.inc_token_supply != 0 {
+    if height > reward_pool.last_reward_block
+        && reward_pool.last_reward_block < config.deadline
+        && reward_pool.inc_token_supply != 0
+    {
         let mut height = height;
         if height > config.deadline {
             height = config.deadline;
         }
+
         let blocks_to_go = config.deadline - reward_pool.last_reward_block;
         let blocks_to_vest = height - reward_pool.last_reward_block;
         let rewards =
@@ -594,7 +594,7 @@ fn query_pending_rewards<S: Storage, A: Api, Q: Querier>(
         acc_reward_per_share += rewards * REWARD_SCALE / reward_pool.inc_token_supply;
     }
 
-    to_binary(&QueryAnswer::QueryRewards {
+    to_binary(&QueryAnswer::Rewards {
         // This is not necessarily accurate, since we don't validate the block height. It is up to
         // the UI to display accurate numbers
         rewards: Uint128(user.locked * acc_reward_per_share / REWARD_SCALE - user.debt),
@@ -609,18 +609,16 @@ fn query_deposit<S: Storage, A: Api, Q: Querier>(
         .load(address.0.as_bytes())
         .unwrap_or(UserInfo { locked: 0, debt: 0 });
 
-    to_binary(&QueryAnswer::QueryDeposit {
+    to_binary(&QueryAnswer::Deposit {
         deposit: Uint128(user.locked * INC_TOKEN_SCALE),
     })
 }
 
-fn query_claim_unlock_height<S: Storage, A: Api, Q: Querier>(
-    deps: &Extern<S, A, Q>,
-) -> StdResult<Binary> {
+fn query_claim_block<S: Storage, A: Api, Q: Querier>(deps: &Extern<S, A, Q>) -> StdResult<Binary> {
     let config: Config = TypedStore::attach(&deps.storage).load(CONFIG_KEY)?;
 
-    to_binary(&QueryAnswer::QueryUnlockClaimHeight {
-        height: Uint128(config.pool_claim_height as u128),
+    to_binary(&QueryAnswer::ClaimBlock {
+        height: config.pool_claim_block,
     })
 }
 
@@ -629,7 +627,7 @@ fn query_contract_status<S: Storage, A: Api, Q: Querier>(
 ) -> StdResult<Binary> {
     let config: Config = TypedStore::attach(&deps.storage).load(CONFIG_KEY)?;
 
-    to_binary(&QueryAnswer::QueryContractStatus {
+    to_binary(&QueryAnswer::ContractStatus {
         is_stopped: config.is_stopped,
     })
 }
@@ -637,7 +635,7 @@ fn query_contract_status<S: Storage, A: Api, Q: Querier>(
 fn query_reward_token<S: Storage, A: Api, Q: Querier>(deps: &Extern<S, A, Q>) -> StdResult<Binary> {
     let config: Config = TypedStore::attach(&deps.storage).load(CONFIG_KEY)?;
 
-    to_binary(&QueryAnswer::QueryRewardToken {
+    to_binary(&QueryAnswer::RewardToken {
         token: config.reward_token,
     })
 }
@@ -647,7 +645,7 @@ fn query_incentivized_token<S: Storage, A: Api, Q: Querier>(
 ) -> StdResult<Binary> {
     let config: Config = TypedStore::attach(&deps.storage).load(CONFIG_KEY)?;
 
-    to_binary(&QueryAnswer::QueryIncentivizedToken {
+    to_binary(&QueryAnswer::IncentivizedToken {
         token: config.inc_token,
     })
 }
@@ -655,18 +653,8 @@ fn query_incentivized_token<S: Storage, A: Api, Q: Querier>(
 fn query_end_height<S: Storage, A: Api, Q: Querier>(deps: &Extern<S, A, Q>) -> StdResult<Binary> {
     let config: Config = TypedStore::attach(&deps.storage).load(CONFIG_KEY)?;
 
-    to_binary(&QueryAnswer::QueryEndHeight {
-        height: Uint128(config.deadline as u128),
-    })
-}
-
-fn query_last_reward_block<S: Storage, A: Api, Q: Querier>(
-    deps: &Extern<S, A, Q>,
-) -> StdResult<Binary> {
-    let reward_pool: RewardPool = TypedStore::attach(&deps.storage).load(REWARD_POOL_KEY)?;
-
-    to_binary(&QueryAnswer::QueryEndHeight {
-        height: Uint128(reward_pool.last_reward_block as u128),
+    to_binary(&QueryAnswer::EndHeight {
+        height: config.deadline,
     })
 }
 
@@ -675,7 +663,7 @@ fn query_reward_pool_balance<S: Storage, A: Api, Q: Querier>(
 ) -> StdResult<Binary> {
     let reward_pool: RewardPool = TypedStore::attach(&deps.storage).load(REWARD_POOL_KEY)?;
 
-    to_binary(&QueryAnswer::QueryRewardPoolBalance {
+    to_binary(&QueryAnswer::RewardPoolBalance {
         balance: Uint128(reward_pool.pending_rewards as u128),
     })
 }
@@ -711,25 +699,28 @@ fn update_rewards<S: Storage, A: Api, Q: Querier>(
     let mut rewards_store = TypedStoreMut::attach(&mut deps.storage);
     let mut reward_pool: RewardPool = rewards_store.load(REWARD_POOL_KEY)?;
 
-    if env.block.height <= reward_pool.last_reward_block
-        || reward_pool.last_reward_block > config.deadline
-    {
+    let mut block = env.block.height;
+    if block > config.deadline {
+        block = config.deadline;
+    }
+
+    if block <= reward_pool.last_reward_block || reward_pool.last_reward_block >= config.deadline {
         return Ok(reward_pool);
     }
 
     if reward_pool.inc_token_supply == 0 || reward_pool.pending_rewards == 0 {
-        reward_pool.last_reward_block = env.block.height;
+        reward_pool.last_reward_block = block;
         rewards_store.store(REWARD_POOL_KEY, &reward_pool)?;
         return Ok(reward_pool);
     }
 
     let blocks_to_go = config.deadline - reward_pool.last_reward_block;
-    let blocks_to_vest = env.block.height - reward_pool.last_reward_block;
+    let blocks_to_vest = block - reward_pool.last_reward_block;
     let rewards = (blocks_to_vest as u128) * reward_pool.pending_rewards / (blocks_to_go as u128);
 
     reward_pool.acc_reward_per_share += rewards * REWARD_SCALE / reward_pool.inc_token_supply;
     reward_pool.pending_rewards -= rewards;
-    reward_pool.last_reward_block = env.block.height;
+    reward_pool.last_reward_block = block;
     rewards_store.store(REWARD_POOL_KEY, &reward_pool)?;
 
     Ok(reward_pool)
@@ -738,12 +729,16 @@ fn update_rewards<S: Storage, A: Api, Q: Querier>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::msg::HandleMsg::{LockTokens, Receive, SetViewingKey};
-    use crate::msg::QueryMsg::QueryRewards;
+    use crate::msg::HandleMsg::{Receive, Redeem, SetViewingKey};
+    use crate::msg::QueryMsg::{Deposit, Rewards};
+    use crate::msg::ReceiveMsg;
     use cosmwasm_std::testing::{
         mock_dependencies, MockApi, MockQuerier, MockStorage, MOCK_CONTRACT_ADDR,
     };
-    use cosmwasm_std::{coins, from_binary, BlockInfo, Coin, ContractInfo, MessageInfo, StdError};
+    use cosmwasm_std::{
+        coins, from_binary, BlockInfo, Coin, ContractInfo, Empty, MessageInfo, StdError, WasmMsg,
+    };
+    use rand::Rng;
 
     // Helper functions
 
@@ -763,8 +758,8 @@ mod tests {
                 address: HumanAddr("eth".to_string()),
                 contract_hash: "2".to_string(),
             },
-            deadline: Uint128(123456789),
-            pool_claim_block: Uint128(123456789),
+            deadline: 100_500_000,
+            pool_claim_block: 1_501_000,
             prng_seed: Binary::from("lolz fun yay".as_bytes()),
             viewing_key: "123".to_string(),
         };
@@ -794,139 +789,173 @@ mod tests {
         }
     }
 
+    fn msg_from_action(action: &str, user: HumanAddr) -> (HandleMsg, String) {
+        let mut rng = rand::thread_rng();
+
+        match action {
+            "deposit" => {
+                let amount: u128 = rng.gen_range(1000, 10000e18 as u128);
+
+                let msg = HandleMsg::Receive {
+                    sender: user.clone(),
+                    from: user,
+                    amount: Uint128(amount),
+                    msg: to_binary(&ReceiveMsg::Deposit {}).unwrap(),
+                };
+
+                (msg, "eth".to_string())
+            }
+            "redeem" => {
+                let amount: u128 = rng.gen_range(1000, 100e18 as u128);
+
+                let msg = HandleMsg::Redeem {
+                    amount: Some(Uint128(amount)),
+                };
+
+                (msg, "scrt".to_string())
+            }
+            _ => (HandleMsg::ResumeContract {}, "".to_string()), // Will never happen
+        }
+    }
+
+    fn print_status(
+        deps: &Extern<MockStorage, MockApi, MockQuerier>,
+        users: Vec<HumanAddr>,
+        block: u64,
+    ) {
+        let reward_pool = TypedStore::<RewardPool, MockStorage>::attach(&deps.storage)
+            .load(REWARD_POOL_KEY)
+            .unwrap();
+
+        println!("####### Statistics for block: {} #######", block);
+        println!("Locked ETH: {}", reward_pool.inc_token_supply);
+        println!("Pending rewards: {}", reward_pool.pending_rewards);
+        println!(
+            "Accumulated rewards per share: {}",
+            reward_pool.acc_reward_per_share
+        );
+        println!("Last reward block: {}", reward_pool.last_reward_block);
+
+        for user in users {
+            println!("## {}:", user.0);
+            let user_info = TypedStore::<UserInfo, MockStorage>::attach(&deps.storage)
+                .load(user.0.as_bytes())
+                .unwrap_or(UserInfo { locked: 0, debt: 0 });
+            let rewards = query_rewards(deps, user.clone(), block);
+
+            println!("Locked: {}", user_info.locked);
+            println!("Debt: {}", user_info.debt);
+            println!("Reward: {}", rewards);
+        }
+
+        println!();
+    }
+
+    fn query_rewards(
+        deps: &Extern<MockStorage, MockApi, MockQuerier>,
+        user: HumanAddr,
+        block: u64,
+    ) -> u128 {
+        let query_msg = QueryMsg::Rewards {
+            address: user,
+            height: block,
+            key: "42".to_string(),
+        };
+
+        let result: QueryAnswer = from_binary(&query(&deps, query_msg).unwrap()).unwrap();
+        match result {
+            QueryAnswer::Rewards { rewards } => rewards.u128(),
+            _ => panic!("NOPE"),
+        }
+    }
+
+    fn set_vks(deps: &mut Extern<MockStorage, MockApi, MockQuerier>, users: Vec<HumanAddr>) {
+        for user in users {
+            let vk_msg = SetViewingKey {
+                key: "42".to_string(),
+                padding: None,
+            };
+            handle(deps, mock_env(user.0, &[], 2001), vk_msg).unwrap();
+        }
+    }
+
     // Tests
 
     #[test]
-    fn test_sanity() {
-        let (init_result, mut deps) = init_helper();
+    fn simulation() {
+        let mut rng = rand::thread_rng();
 
-        add_to_pool(&mut deps, mock_env("scrt", &[], 1), 500000_000000).unwrap(); // 500,000 scrt
-        lock_tokens(
-            &mut deps,
-            mock_env("eth", &[], 2),
-            HumanAddr("alice".to_string()),
-            1_000000000000000000,
-        )
-        .unwrap();
+        for _ in 0..5 {
+            let (init_result, mut deps) = init_helper();
 
-        let config = TypedStore::<Config, MockStorage>::attach(&deps.storage)
-            .load(CONFIG_KEY)
+            deposit_rewards(&mut deps, mock_env("scrt", &[], 1), 500_000_000000).unwrap(); // 500,000 scrt
+            deposit(
+                &mut deps,
+                mock_env("eth", &[], 2),
+                HumanAddr("alice".to_string()),
+                1_000000000000000000,
+            )
             .unwrap();
-        let reward_pool = update_rewards(&mut deps, &mock_env("alice", &[], 2), &config).unwrap();
-        println!("{:?}", reward_pool);
-        let pending = query_pending_rewards(&deps, &HumanAddr("alice".to_string()), 2).unwrap();
-        println!("{:?}", String::from_utf8_lossy(&pending.0));
 
-        println!();
-        println!("Alice on block 3:");
-        let reward_pool = update_rewards(&mut deps, &mock_env("alice", &[], 3), &config).unwrap();
-        println!("{:?}", reward_pool);
-        let pending = query_pending_rewards(&deps, &HumanAddr("alice".to_string()), 3).unwrap();
-        println!("{:?}", String::from_utf8_lossy(&pending.0));
+            let actions = vec!["deposit", "redeem"];
+            let users = vec![
+                HumanAddr("Lebron James".to_string()),
+                HumanAddr("Kobe Bryant".to_string()),
+                HumanAddr("Giannis".to_string()),
+                HumanAddr("Steph Curry".to_string()),
+                HumanAddr("Deni Avdija".to_string()),
+            ];
 
-        println!();
-        println!("Alice on block 4:");
-        let reward_pool = update_rewards(&mut deps, &mock_env("alice", &[], 4), &config).unwrap();
-        println!("{:?}", reward_pool);
-        let pending = query_pending_rewards(&deps, &HumanAddr("alice".to_string()), 4).unwrap();
-        println!("{:?}", String::from_utf8_lossy(&pending.0));
+            let mut total_rewards_output = 0;
 
-        println!();
-        println!("====== bob locks tokens ======");
+            set_vks(&mut deps, users.clone());
+            for block in 1..1_600_001 as u64 {
+                let num_of_actions = rng.gen_range(0, 5);
 
-        let receive_msg = Receive {
-            sender: HumanAddr("bob".to_string()),
-            from: HumanAddr("bob".to_string()),
-            amount: Uint128(1000_000000000000000000),
-            msg: to_binary(&LockTokens {}).unwrap(),
-        };
-        handle(&mut deps, mock_env("eth", &[], 4), receive_msg).unwrap();
+                for i in 0..num_of_actions {
+                    let action_idx = rng.gen_range(0, 2);
 
-        // lock_tokens(
-        //     &mut deps,
-        //     mock_env("eth", &[], 4),
-        //     HumanAddr("bob".to_string()),
-        //     1000_000000000000000000,
-        // )
-        // .unwrap();
+                    let user_idx = rng.gen_range(0, users.len());
+                    let user = users[user_idx].clone();
 
-        println!();
-        println!("Alice on block 5:");
-        let reward_pool = update_rewards(&mut deps, &mock_env("alice", &[], 5), &config).unwrap();
-        println!("{:?}", reward_pool);
-        let pending = query_pending_rewards(&deps, &HumanAddr("alice".to_string()), 5).unwrap();
-        println!("{:?}", String::from_utf8_lossy(&pending.0));
+                    let (msg, sender) = msg_from_action(actions[action_idx], user.clone());
+                    let result = handle(&mut deps, mock_env(sender, &[], block), msg);
+                    match result {
+                        Ok(resp) => match resp.messages[0].clone() {
+                            CosmosMsg::Wasm(w) => match w {
+                                WasmMsg::Execute { msg, .. } => {
+                                    let transfer_msg: snip20::HandleMsg =
+                                        from_binary(&msg).unwrap();
 
-        println!();
-        println!("Bob on block 5:");
-        let reward_pool = update_rewards(&mut deps, &mock_env("alice", &[], 5), &config).unwrap();
-        println!("{:?}", reward_pool);
-        let pending = query_pending_rewards(&deps, &HumanAddr("bob".to_string()), 5).unwrap();
-        println!("{:?}", String::from_utf8_lossy(&pending.0));
+                                    match transfer_msg {
+                                        snip20::HandleMsg::Transfer { amount, .. } => {
+                                            total_rewards_output += amount.u128();
+                                        }
+                                        _ => panic!(),
+                                    }
+                                }
+                                _ => panic!(),
+                            },
+                            _ => panic!(),
+                        },
+                        Err(e) => match e {
+                            StdError::NotFound { .. } => {}
+                            StdError::GenericErr { msg, backtrace } => {
+                                if !msg.contains("insufficient") {
+                                    panic!(format!("{}", msg))
+                                }
+                            }
+                            _ => panic!(format!("{:?}", e)),
+                        },
+                    }
+                }
 
-        println!();
-        println!("===== Doubled the pool =====");
-        add_to_pool(&mut deps, mock_env("scrt", &[], 5), 500000_000000).unwrap(); // 500,000 scrt
+                if block % 10000 == 0 {
+                    print_status(&deps, users.clone(), block);
+                }
+            }
 
-        println!();
-        println!("Alice on block 6:");
-        let reward_pool = update_rewards(&mut deps, &mock_env("alice", &[], 6), &config).unwrap();
-        println!("{:?}", reward_pool);
-        let pending = query_pending_rewards(&deps, &HumanAddr("alice".to_string()), 6).unwrap();
-        println!("{:?}", String::from_utf8_lossy(&pending.0));
-
-        println!();
-        println!("Bob on block 6:");
-        let reward_pool = update_rewards(&mut deps, &mock_env("alice", &[], 6), &config).unwrap();
-        println!("{:?}", reward_pool);
-        let pending = query_pending_rewards(&deps, &HumanAddr("bob".to_string()), 6).unwrap();
-        println!("{:?}", String::from_utf8_lossy(&pending.0));
-
-        println!();
-        println!("Alice on block 2000:");
-        let reward_pool =
-            update_rewards(&mut deps, &mock_env("alice", &[], 2000), &config).unwrap();
-        println!("{:?}", reward_pool);
-        let pending = query_pending_rewards(&deps, &HumanAddr("alice".to_string()), 2000).unwrap();
-        println!("{:?}", String::from_utf8_lossy(&pending.0));
-
-        println!();
-        println!("Bob on block 2000:");
-        let reward_pool =
-            update_rewards(&mut deps, &mock_env("alice", &[], 2000), &config).unwrap();
-        println!("{:?}", reward_pool);
-        let pending = query_pending_rewards(&deps, &HumanAddr("bob".to_string()), 2000).unwrap();
-        println!("{:?}", String::from_utf8_lossy(&pending.0));
-
-        let vk_msg = SetViewingKey {
-            key: "123".to_string(),
-            padding: None,
-        };
-        handle(&mut deps, mock_env("bob".to_string(), &[], 2001), vk_msg).unwrap();
-        let query_msg = QueryRewards {
-            address: HumanAddr("bob".to_string()),
-            height: Uint128(2001),
-            key: "123".to_string(),
-        };
-        let query_answer = query(&deps, query_msg).unwrap();
-        println!("{:?}", String::from_utf8_lossy(&query_answer.0));
-
-        println!("====== bob locks tokens ======");
-        let receive_msg = Receive {
-            sender: HumanAddr("bob".to_string()),
-            from: HumanAddr("bob".to_string()),
-            amount: Uint128(1000_000000000000000000),
-            msg: to_binary(&LockTokens {}).unwrap(),
-        };
-        handle(&mut deps, mock_env("eth", &[], 2002), receive_msg).unwrap();
-        let query_msg = QueryRewards {
-            address: HumanAddr("bob".to_string()),
-            height: Uint128(2003),
-            key: "123".to_string(),
-        };
-        let query_answer = query(&deps, query_msg).unwrap();
-        println!("{:?}", String::from_utf8_lossy(&query_answer.0));
-
-        assert_eq!("", "");
+            assert_eq!(total_rewards_output, 500_000_000000);
+        }
     }
 }

@@ -8,8 +8,8 @@ use serde::{Deserialize, Serialize};
 pub struct InitMsg {
     pub reward_token: Snip20,
     pub inc_token: Snip20,
-    pub deadline: Uint128,
-    pub pool_claim_block: Uint128,
+    pub deadline: u64,
+    pub pool_claim_block: u64,
     pub viewing_key: String,
     pub prng_seed: Binary,
 }
@@ -17,8 +17,6 @@ pub struct InitMsg {
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum HandleMsg {
-    LockTokens {},
-    AddToRewardPool {},
     Redeem {
         amount: Option<Uint128>,
     },
@@ -42,16 +40,16 @@ pub enum HandleMsg {
 
     // Admin commands
     UpdateIncentivizedToken {
-        new_token: Snip20,
+        token: Snip20,
     },
     UpdateRewardToken {
-        new_token: Snip20,
+        token: Snip20,
     },
-    UpdateDeadline {
-        height: u64,
+    SetDeadline {
+        block: u64,
     },
     ClaimRewardPool {
-        recipient: Option<HumanAddr>,
+        to: Option<HumanAddr>,
     },
     StopContract {},
     ResumeContract {},
@@ -63,8 +61,6 @@ pub enum HandleMsg {
 #[derive(Serialize, Deserialize, JsonSchema, Debug)]
 #[serde(rename_all = "snake_case")]
 pub enum HandleAnswer {
-    LockTokens { status: ResponseStatus },
-    AddToRewardPool { status: ResponseStatus },
     Redeem { status: ResponseStatus },
     CreateViewingKey { key: ViewingKey },
     SetViewingKey { status: ResponseStatus },
@@ -73,28 +69,41 @@ pub enum HandleAnswer {
     StopContract { status: ResponseStatus },
     ResumeContract { status: ResponseStatus },
     ChangeAdmin { status: ResponseStatus },
-    UpdateDeadline { status: ResponseStatus },
+    SetDeadline { status: ResponseStatus },
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ReceiveMsg {
+    Deposit {},
+    DepositRewards {},
+}
+
+#[derive(Serialize, Deserialize, JsonSchema, Debug)]
+#[serde(rename_all = "snake_case")]
+pub enum ReceiveAnswer {
+    Deposit { status: ResponseStatus },
+    DepositRewards { status: ResponseStatus },
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum QueryMsg {
     TokenInfo {},
-    QueryUnlockClaimHeight {},
-    QueryContractStatus {},
+    ClaimBlock {},
+    ContractStatus {},
     QueryRewardToken {},
-    QueryIncentivizedToken {},
-    QueryEndHeight {},
-    QueryLastRewardBlock {},
-    QueryRewardPoolBalance {},
+    IncentivizedToken {},
+    EndHeight {},
+    RewardPoolBalance {},
 
     // Authenticated
-    QueryRewards {
+    Rewards {
         address: HumanAddr,
-        height: Uint128,
+        height: u64,
         key: String,
     },
-    QueryDeposit {
+    Deposit {
         address: HumanAddr,
         key: String,
     },
@@ -103,8 +112,8 @@ pub enum QueryMsg {
 impl QueryMsg {
     pub fn get_validation_params(&self) -> (&HumanAddr, ViewingKey) {
         match self {
-            QueryMsg::QueryRewards { address, key, .. } => (address, ViewingKey(key.clone())),
-            QueryMsg::QueryDeposit { address, key } => (address, ViewingKey(key.clone())),
+            QueryMsg::Rewards { address, key, .. } => (address, ViewingKey(key.clone())),
+            QueryMsg::Deposit { address, key } => (address, ViewingKey(key.clone())),
             _ => panic!("This should never happen"),
         }
     }
@@ -119,31 +128,28 @@ pub enum QueryAnswer {
         decimals: u8,
         total_supply: Option<Uint128>,
     },
-    QueryRewards {
+    Rewards {
         rewards: Uint128,
     },
-    QueryDeposit {
+    Deposit {
         deposit: Uint128,
     },
-    QueryUnlockClaimHeight {
-        height: Uint128,
+    ClaimBlock {
+        height: u64,
     },
-    QueryContractStatus {
+    ContractStatus {
         is_stopped: bool,
     },
-    QueryRewardToken {
+    RewardToken {
         token: Snip20,
     },
-    QueryIncentivizedToken {
+    IncentivizedToken {
         token: Snip20,
     },
-    QueryEndHeight {
-        height: Uint128,
+    EndHeight {
+        height: u64,
     },
-    QueryLastRewardBlock {
-        height: Uint128,
-    },
-    QueryRewardPoolBalance {
+    RewardPoolBalance {
         balance: Uint128,
     },
 
