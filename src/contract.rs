@@ -280,7 +280,7 @@ fn redeem<S: Storage, A: Api, Q: Querier>(
         .load(env.message.sender.0.as_bytes())
         .unwrap_or(UserInfo { locked: 0, debt: 0 }); // NotFound is the only possible error
     let amount = amount
-        .unwrap_or(Uint128(user.locked * INC_TOKEN_SCALE)) // Multiplying to match scale
+        .unwrap_or(Uint128(user.locked * INC_TOKEN_SCALE)) // Multiplying to match scale of input, dividing again later
         .u128()
         / INC_TOKEN_SCALE;
 
@@ -741,11 +741,11 @@ mod tests {
     use rand::Rng;
     use serde::{Deserialize, Serialize};
 
-    const DEADLINE: u64 = 1_500_000;
-
     // Helper functions
 
-    fn init_helper() -> (
+    fn init_helper(
+        deadline: u64,
+    ) -> (
         StdResult<InitResponse>,
         Extern<MockStorage, MockApi, MockQuerier>,
     ) {
@@ -761,8 +761,8 @@ mod tests {
                 address: HumanAddr("eth".to_string()),
                 contract_hash: "2".to_string(),
             },
-            deadline: DEADLINE,
-            pool_claim_block: DEADLINE + 1,
+            deadline,
+            pool_claim_block: deadline + 1,
             prng_seed: Binary::from("lolz fun yay".as_bytes()),
             viewing_key: "123".to_string(),
         };
@@ -797,7 +797,7 @@ mod tests {
 
         match action {
             "deposit" => {
-                let amount: u128 = rng.gen_range(1000, 10000e18 as u128);
+                let amount: u128 = rng.gen_range(10e12 as u128, 1000e18 as u128);
 
                 let msg = HandleMsg::Receive {
                     sender: user.clone(),
@@ -809,13 +809,13 @@ mod tests {
                 (msg, "eth".to_string())
             }
             "redeem" => {
-                let amount: u128 = rng.gen_range(1000, 100e18 as u128);
+                let amount: u128 = rng.gen_range(1e12 as u128, 1000e18 as u128);
 
                 let msg = HandleMsg::Redeem {
                     amount: Some(Uint128(amount)),
                 };
 
-                (msg, "scrt".to_string())
+                (msg, user.0)
             }
             _ => (HandleMsg::ResumeContract {}, "".to_string()), // Will never happen
         }
@@ -928,10 +928,19 @@ mod tests {
     fn simulation() {
         let mut rng = rand::thread_rng();
 
-        for _ in 0..1 {
-            let (init_result, mut deps) = init_helper();
+        for run in 0..100 {
+            let deadline = rng.gen_range(100_000, 10_000_000);
+            let rewards = rng.gen_range(1_000_000000, 10_000_000_000000); // 1k-10mn SCRT
 
-            deposit_rewards(&mut deps, mock_env("scrt", &[], 1), 500_000_000000).unwrap(); // 500,000 scrt
+            println!("$$$$$$$$$$$$$$$$$$ Run Parameters $$$$$$$$$$$$$$$$$$");
+            println!("Run number: {}", run + 1);
+            println!("Rewards: {}", rewards);
+            println!("Deadline: {}", deadline);
+            println!();
+
+            let (init_result, mut deps) = init_helper(deadline);
+
+            deposit_rewards(&mut deps, mock_env("scrt", &[], 1), rewards).unwrap();
 
             let actions = vec!["deposit", "redeem"];
             let users = vec![
@@ -945,7 +954,7 @@ mod tests {
             let mut total_rewards_output = 0;
 
             set_vks(&mut deps, users.clone());
-            for block in 2..DEADLINE + 10_000 {
+            for block in 2..deadline + 10_000 {
                 let num_of_actions = rng.gen_range(0, 5);
 
                 for i in 0..num_of_actions {
