@@ -264,9 +264,9 @@ function get_balance() {
     local address="$2"
 
     log "querying balance for \"$address\""
-    local balance_query='{"balance":{"address":"'"$address"'","key":"123"}}'
+    local deposit_query='{"balance":{"address":"'"$address"'","key":"123"}}'
     local balance_response
-    balance_response="$(compute_query "$contract_addr" "$balance_query")"
+    balance_response="$(compute_query "$contract_addr" "$deposit_query")"
     log "balance response was: $balance_response"
     jq -r '.balance.amount' <<<"$balance_response"
 }
@@ -365,8 +365,140 @@ function log_test_header() {
     log " # Starting ${FUNCNAME[1]}"
 }
 
+##### lockup help functions
+
+function redeem_amount() {
+    local contract_addr="$1"
+    local owner_key="$2"
+    local amount="$3"
+
+    log "redeem locked assets of \"$owner_key\". amount: \"$amount\""
+    local owner_address="${ADDRESS[$owner_key]}"
+    local redeem_msg='{"redeem":{"amount":"'"$amount"'"}}'
+    local redeem_response
+    redeem_response="$(compute_query "$contract_addr" "$redeem_msg")"
+    log "allowance response was: $redeem_response"
+}
+
+function redeem() {
+    local contract_addr="$1"
+    local owner_key="$2"
+
+    log "redeem locked all assets of \"$owner_key\""
+    local owner_address="${ADDRESS[$owner_key]}"
+    local redeem_msg='{"redeem":{}}'
+    local redeem_response
+    redeem_response="$(compute_query "$contract_addr" "$redeem_msg")"
+    log "allowance response was: $redeem_response"
+}
+
+##### actual test functions
+
+function test_viewing_key() {
+    local contract_addr="$1"
+
+    log_test_header
+
+    # common variables
+    local result
+    local tx_hash
+
+    # query balance. Should fail.
+    local wrong_key
+    wrong_key="$(xxd -ps <<<'wrong-key')"
+    local deposit_query
+    local expected_error='{"query_error":{"msg":"Wrong viewing key for this address or viewing key not set"}}                                                                                                                                                                             '
+    for key in "${KEY[@]}"; do
+        log "querying deposit for \"$key\" with wrong viewing key"
+        deposit_query='{"deposit":{"address":"'"${ADDRESS[$key]}"'","key":"'"$wrong_key"'"}}'
+        result="$(compute_query "$contract_addr" "$deposit_query")"
+        assert_eq "$result" "$expected_error"
+    done
+
+    # Create viewing keys
+    local create_viewing_key_message='{"create_viewing_key":{"entropy":"MyPassword123"}}'
+    local viewing_key_response
+    for key in "${KEY[@]}"; do
+        log "creating viewing key for \"$key\""
+        tx_hash="$(compute_execute "$contract_addr" "$create_viewing_key_message" ${FROM[$key]} --gas 1400000)"
+        viewing_key_response="$(data_of wait_for_compute_tx "$tx_hash" "waiting for viewing key for \"$key\" to be created")"
+        VK[$key]="$(jq -er '.create_viewing_key.key' <<<"$viewing_key_response")"
+        log "viewing key for \"$key\" set to ${VK[$key]}"
+        if [[ "${VK[$key]}" =~ ^api_key_ ]]; then
+            log "viewing key \"$key\" seems valid"
+        else
+            log 'viewing key is invalid'
+            return 1
+        fi
+    done
+
+    # Check that all viewing keys are different despite using the same entropy
+    assert_ne "${VK[a]}" "${VK[b]}"
+    assert_ne "${VK[b]}" "${VK[c]}"
+    assert_ne "${VK[c]}" "${VK[d]}"
+
+    # query balance. Should succeed.
+    local deposit_query
+    for key in "${KEY[@]}"; do
+        deposit_query='{"deposit":{"address":"'"${ADDRESS[$key]}"'","key":"'"${VK[$key]}"'"}}'
+        log "querying deposit for \"$key\" with correct viewing key"
+        result="$(compute_query "$contract_addr" "$deposit_query")"
+        if ! silent jq -e '.deposit.deposit | tonumber' <<<"$result"; then
+            log "Deposit query returned unexpected response: ${result@Q}"
+            return 1
+        fi
+    done
+
+    # Change viewing keys
+    local vk2_a
+
+    log 'creating new viewing key for "a"'
+    tx_hash="$(compute_execute "$contract_addr" "$create_viewing_key_message" ${FROM[a]} --gas 1400000)"
+    viewing_key_response="$(data_of wait_for_compute_tx "$tx_hash" 'waiting for viewing key for "a" to be created')"
+    vk2_a="$(jq -er '.create_viewing_key.key' <<<"$viewing_key_response")"
+    log "viewing key for \"a\" set to $vk2_a"
+    assert_ne "${VK[a]}" "$vk2_a"
+
+    # query deposit with old keys. Should fail.
+    log 'querying deposit for "a" with old viewing key'
+    local deposit_query_a='{"deposit":{"address":"'"${ADDRESS[a]}"'","key":"'"${VK[a]}"'"}}'
+    result="$(compute_query "$contract_addr" "$deposit_query_a")"
+    assert_eq "$result" "$expected_error"
+
+    # query deposit with new keys. Should succeed.
+    log 'querying deposit for "a" with new viewing key'
+    deposit_query_a='{"deposit":{"address":"'"${ADDRESS[a]}"'","key":"'"$vk2_a"'"}}'
+    result="$(compute_query "$contract_addr" "$deposit_query_a")"
+    if ! silent jq -e '.deposit.deposit | tonumber' <<<"$result"; then
+        log "Deposit query returned unexpected response: ${result@Q}"
+        return 1
+    fi
+
+    # Set the vk for "a" to the original vk
+    log 'setting the viewing key for "a" back to the first one'
+    local set_viewing_key_message='{"set_viewing_key":{"key":"'"${VK[a]}"'"}}'
+    tx_hash="$(compute_execute "$contract_addr" "$set_viewing_key_message" ${FROM[a]} --gas 1400000)"
+    viewing_key_response="$(data_of wait_for_compute_tx "$tx_hash" 'waiting for viewing key for "a" to be set')"
+    assert_eq "$viewing_key_response" "$(pad_space '{"set_viewing_key":{"status":"success"}}')"
+
+    # try to use the new key - should fail
+    log 'querying deposit for "a" with new viewing key'
+    deposit_query_a='{"deposit":{"address":"'"${ADDRESS[a]}"'","key":"'"$vk2_a"'"}}'
+    result="$(compute_query "$contract_addr" "$deposit_query_a")"
+    assert_eq "$result" "$expected_error"
+
+    # try to use the old key - should succeed
+    log 'querying deposit for "a" with old viewing key'
+    deposit_query_a='{"deposit":{"address":"'"${ADDRESS[a]}"'","key":"'"${VK[a]}"'"}}'
+    result="$(compute_query "$contract_addr" "$deposit_query_a")"
+    if ! silent jq -e '.deposit.deposit | tonumber' <<<"$result"; then
+        log "Deposit query returned unexpected response: ${result@Q}"
+        return 1
+    fi
+}
+
 function main() {
-#    log '              <####> Starting integration tests <####>'
+    log '              <####> Starting integration tests <####>'
     log "secretcli version in the docker image is: $(secretcli version)"
 
     local prng_seed
@@ -380,7 +512,6 @@ function main() {
     # secretSCRT init
     init_msg='{"name":"secret-secret","admin":"'"${ADDRESS[a]}"'","symbol":"SSCRT","decimals":6,"initial_balances":[],"prng_seed":"'"$prng_seed"'","config":{"public_total_supply":true}}'
     scrt_contract_addr="$(init_contract "$code_id" "$init_msg")"
-#    sscrt_contract_addr="$(create_contract '../secret-secret' "$init_msg")"
     scrt_contract_hash="$(secretcli q compute contract-hash "$scrt_contract_addr")"
     scrt_contract_hash="${scrt_contract_hash:2}"
 
@@ -388,11 +519,14 @@ function main() {
     b_addr="$(secretcli keys show b -a)"
     init_msg='{"name":"secret-eth","admin":"'"${ADDRESS[a]}"'","symbol":"SETH","decimals":18,"initial_balances":[{"address":"'"$b_addr"'", "amount":"1000000000000000000000"}],"prng_seed":"'"$prng_seed"'","config":{"public_total_supply":true}}'
     eth_contract_addr="$(init_contract "$code_id" "$init_msg")"
-#    eth_contract_addr="$(create_contract '../secret-secret' "$init_msg")"
     eth_contract_hash="$(secretcli q compute contract-hash "$eth_contract_addr")"
     eth_contract_hash="${eth_contract_hash:2}"
 
-    init_msg='{"reward_token":{"address":"'"$scrt_contract_addr"'", "contract_hash":"'"$scrt_contract_hash"'"}, "inc_token":{"address":"'"$eth_contract_addr"'", "contract_hash":"'"$eth_contract_hash"'"}, "end_by_height":"10000", "pool_claim_block":"100000", "viewing_key": "123", "prng_seed": "MTEK"}'
+    # Rewards init
+    status="$(secretcli status)"
+    block=$(jq -r '.sync_info.latest_block_height | tonumber' <<< "$status")
+    block=$((block+100000))
+    init_msg='{"reward_token":{"address":"'"$scrt_contract_addr"'", "contract_hash":"'"$scrt_contract_hash"'"}, "inc_token":{"address":"'"$eth_contract_addr"'", "contract_hash":"'"$eth_contract_hash"'"}, "deadline":'"$block"', "pool_claim_block":'"$block"', "viewing_key": "123", "prng_seed": "'"$prng_seed"'"}'
     lockup_contract_addr="$(create_contract '.' "$init_msg")"
     lockup_contract_hash="$(secretcli q compute contract-hash "$lockup_contract_addr")"
     lockup_contract_hash="${lockup_contract_hash:2}"
@@ -409,28 +543,25 @@ function main() {
     log 'depositing rewards to secretSCRT and transfer to the lockup contract'
     local rewards='500000000000'
     deposit "$scrt_contract_addr" 'a' "$rewards"
-
-    local receiver_msg='{"add_to_reward_pool":{}}'
+    local receiver_msg='{"deposit_rewards":{}}'
     receiver_msg="$(base64 <<<"$receiver_msg")"
     local send_message='{"send":{"recipient":"'"$lockup_contract_addr"'","amount":"'"$rewards"'","msg":"'"$receiver_msg"'"}}'
     local send_response
     tx_hash="$(compute_execute "$scrt_contract_addr" "$send_message" ${FROM[a]} --gas 500000)"
-    send_response="$(wait_for_compute_tx "$tx_hash" 'waiting for send from "b" to the lockup to process')"
+    send_response="$(wait_for_compute_tx "$tx_hash" 'waiting for deposit rewards to complete')"
     log "$send_response"
 
     balance="$(get_balance "$scrt_contract_addr" "$lockup_contract_addr")"
-    log 'lockup contracts scrt balance is: '"$balance"
-
-    local receiver_state_query='{"query_reward_pool_balance":{}}'
+    log 'lockup contracts reward balance is: '"$balance"
+    local receiver_state_query='{"reward_pool_balance":{}}'
     rewards_result="$(compute_query "$lockup_contract_addr" "$receiver_state_query")"
-    rewards="$(jq -r '.query_reward_pool_balance.balance' <<<"$rewards_result")"
+    rewards="$(jq -r '.reward_pool_balance.balance' <<<"$rewards_result")"
     log 'lockup contracts rewards pool is: '"$rewards"
 
     # Lock eth in contract
     log 'locking eth in the lockup contract'
     local amount='100000000000000000000' # 100 eth
-
-    local receiver_msg='{"lock_tokens":{}}'
+    local receiver_msg='{"deposit":{}}'
     receiver_msg="$(base64 <<<"$receiver_msg")"
     local send_message='{"send":{"recipient":"'"$lockup_contract_addr"'","amount":"'"$amount"'","msg":"'"$receiver_msg"'"}}'
     local send_response
@@ -438,40 +569,18 @@ function main() {
     send_response="$(wait_for_compute_tx "$tx_hash" 'waiting for send from "b" to the lockup to process')"
     log "$send_response"
 
-    log 'setting the viewing key for "b"'
-    local set_viewing_key_message='{"set_viewing_key":{"key":"123"}}'
-    tx_hash="$(compute_execute "$lockup_contract_addr" "$set_viewing_key_message" ${FROM[b]} --gas 1400000)"
-    viewing_key_response="$(data_of wait_for_compute_tx "$tx_hash" 'waiting for viewing key for "b" to be set')"
-    assert_eq "$viewing_key_response" "$(pad_space '{"set_viewing_key":{"status":"success"}}')"
-
-    local receiver_msg='{"lock_tokens":{}}'
-    receiver_msg="$(base64 <<<"$receiver_msg")"
-    local send_message='{"send":{"recipient":"'"$lockup_contract_addr"'","amount":"'"$amount"'","msg":"'"$receiver_msg"'"}}'
-    local send_response
-    tx_hash="$(compute_execute "$eth_contract_addr" "$send_message" ${FROM[b]} --gas 500000)"
-    send_response="$(wait_for_compute_tx "$tx_hash" 'waiting for send from "b" to the lockup to process')"
-    log "$send_response"
-
-    local receiver_msg='{"lock_tokens":{}}'
-    receiver_msg="$(base64 <<<"$receiver_msg")"
-    local send_message='{"send":{"recipient":"'"$lockup_contract_addr"'","amount":"'"$amount"'","msg":"'"$receiver_msg"'"}}'
-    local send_response
-    tx_hash="$(compute_execute "$eth_contract_addr" "$send_message" ${FROM[b]} --gas 500000)"
-    send_response="$(wait_for_compute_tx "$tx_hash" 'waiting for send from "b" to the lockup to process')"
-    log "$send_response"
-
-    local receiver_msg='{"lock_tokens":{}}'
-    receiver_msg="$(base64 <<<"$receiver_msg")"
-    local send_message='{"send":{"recipient":"'"$lockup_contract_addr"'","amount":"'"$amount"'","msg":"'"$receiver_msg"'"}}'
-    local send_response
-    tx_hash="$(compute_execute "$eth_contract_addr" "$send_message" ${FROM[b]} --gas 500000)"
-    send_response="$(wait_for_compute_tx "$tx_hash" 'waiting for send from "b" to the lockup to process')"
-    log "$send_response"
-
-    log 'querying rewards for "b"'
-    reward_query_b='{"query_rewards":{"address":"'"${ADDRESS[b]}"'","key":"123", "height":"1200"}}'
-    result="$(compute_query "$lockup_contract_addr" "$reward_query_b")"
-    log "$result"
+#    log 'setting the viewing key for "b"'
+#    local set_viewing_key_message='{"set_viewing_key":{"key":"123"}}'
+#    tx_hash="$(compute_execute "$lockup_contract_addr" "$set_viewing_key_message" ${FROM[b]} --gas 1400000)"
+#    viewing_key_response="$(data_of wait_for_compute_tx "$tx_hash" 'waiting for viewing key for "b" to be set')"
+#    assert_eq "$viewing_key_response" "$(pad_space '{"set_viewing_key":{"status":"success"}}')"
+#
+#    log 'querying rewards for "b"'
+#    status="$(secretcli status)"
+#    block="$(jq -r '.sync_info.latest_block_height | tonumber' <<< "$status")"
+#    reward_query_b='{"rewards":{"address":"'"${ADDRESS[b]}"'","key":"123", "height":'"$block"'}}'
+#    result="$(compute_query "$lockup_contract_addr" "$reward_query_b")"
+#    log "$result"
 
     log '###### Contracts Details ######'
     log 'code id is: ' "$code_id"
@@ -486,9 +595,10 @@ function main() {
     log 'lockup hash is: ' "$lockup_contract_hash"
     log ''
 
+    test_viewing_key "$lockup_contract_addr"
+
     log 'Tests completed successfully'
 
-    '{"name":"secretSCRT","symbol":"SSCRT","decimals":6,"initial_balances":[{"address":"secret1gs8hau7q8xcya2jum7anj9ap47hw96rmhs2smv",""amount":"20000000000000"}],"prng_seed":"MTEK","config":{"public_total_supply":true}}'
     # If everything else worked, return successful status
     return 0
 }

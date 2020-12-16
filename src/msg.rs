@@ -92,7 +92,7 @@ pub enum QueryMsg {
     TokenInfo {},
     ClaimBlock {},
     ContractStatus {},
-    QueryRewardToken {},
+    RewardToken {},
     IncentivizedToken {},
     EndHeight {},
     RewardPoolBalance {},

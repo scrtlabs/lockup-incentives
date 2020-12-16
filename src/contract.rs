@@ -133,7 +133,7 @@ pub fn query<S: Storage, A: Api, Q: Querier>(
     let response = match msg {
         QueryMsg::ClaimBlock {} => query_claim_block(deps),
         QueryMsg::ContractStatus {} => query_contract_status(deps),
-        QueryMsg::QueryRewardToken {} => query_reward_token(deps),
+        QueryMsg::RewardToken {} => query_reward_token(deps),
         QueryMsg::IncentivizedToken {} => query_incentivized_token(deps),
         QueryMsg::EndHeight {} => query_end_height(deps),
         QueryMsg::RewardPoolBalance {} => query_reward_pool_balance(deps),
