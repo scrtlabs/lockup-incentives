@@ -922,15 +922,75 @@ mod tests {
         0
     }
 
+    fn sanity_run(rewards: u128, deadline: u64) {
+        let mut rng = rand::thread_rng();
+
+        let (init_result, mut deps) = init_helper(deadline);
+
+        deposit_rewards(&mut deps, mock_env("scrt", &[], 1), rewards).unwrap();
+
+        let actions = vec!["deposit", "redeem"];
+        let users = vec![
+            HumanAddr("Lebron James".to_string()),
+            HumanAddr("Kobe Bryant".to_string()),
+            HumanAddr("Giannis".to_string()),
+            HumanAddr("Steph Curry".to_string()),
+            HumanAddr("Deni Avdija".to_string()),
+        ];
+
+        let mut total_rewards_output = 0;
+
+        set_vks(&mut deps, users.clone());
+        for block in 2..deadline + 10_000 {
+            let num_of_actions = rng.gen_range(0, 5);
+
+            for i in 0..num_of_actions {
+                let action_idx = rng.gen_range(0, 2);
+
+                let user_idx = rng.gen_range(0, users.len());
+                let user = users[user_idx].clone();
+
+                let (msg, sender) = msg_from_action(actions[action_idx], user.clone());
+                let result = handle(&mut deps, mock_env(sender, &[], block), msg);
+                total_rewards_output += extract_rewards(result);
+            }
+
+            if block % 10000 == 0 {
+                print_status(&deps, users.clone(), block);
+            }
+        }
+
+        // Make sure all users are fully redeemed
+        for user in users {
+            let redeem_msg = HandleMsg::Redeem { amount: None };
+            let result = handle(&mut deps, mock_env(user.0, &[], 1_700_000), redeem_msg);
+            total_rewards_output += extract_rewards(result);
+        }
+
+        let error = 1.0 - (total_rewards_output as f64 / 500_000_000000.0);
+        assert!(error < 0.005, format!("{}", error));
+    }
+
     // Tests
 
     #[test]
-    fn simulation() {
+    fn test_single_run() {
+        let mut rng = rand::thread_rng();
+
+        let deadline: u64 = rng.gen_range(100_000, 10_000_000);
+        let rewards: u128 = rng.gen_range(1_000_000000, 10_000_000_000000); // 1k-10mn SCRT
+
+        sanity_run(rewards, deadline);
+    }
+
+    #[test]
+    #[ignore]
+    fn test_simulations() {
         let mut rng = rand::thread_rng();
 
         for run in 0..100 {
-            let deadline = rng.gen_range(100_000, 10_000_000);
-            let rewards = rng.gen_range(1_000_000000, 10_000_000_000000); // 1k-10mn SCRT
+            let deadline: u64 = rng.gen_range(100_000, 10_000_000);
+            let rewards: u128 = rng.gen_range(1_000_000000, 10_000_000_000000); // 1k-10mn SCRT
 
             println!("$$$$$$$$$$$$$$$$$$ Run Parameters $$$$$$$$$$$$$$$$$$");
             println!("Run number: {}", run + 1);
@@ -938,50 +998,7 @@ mod tests {
             println!("Deadline: {}", deadline);
             println!();
 
-            let (init_result, mut deps) = init_helper(deadline);
-
-            deposit_rewards(&mut deps, mock_env("scrt", &[], 1), rewards).unwrap();
-
-            let actions = vec!["deposit", "redeem"];
-            let users = vec![
-                HumanAddr("Lebron James".to_string()),
-                HumanAddr("Kobe Bryant".to_string()),
-                HumanAddr("Giannis".to_string()),
-                HumanAddr("Steph Curry".to_string()),
-                HumanAddr("Deni Avdija".to_string()),
-            ];
-
-            let mut total_rewards_output = 0;
-
-            set_vks(&mut deps, users.clone());
-            for block in 2..deadline + 10_000 {
-                let num_of_actions = rng.gen_range(0, 5);
-
-                for i in 0..num_of_actions {
-                    let action_idx = rng.gen_range(0, 2);
-
-                    let user_idx = rng.gen_range(0, users.len());
-                    let user = users[user_idx].clone();
-
-                    let (msg, sender) = msg_from_action(actions[action_idx], user.clone());
-                    let result = handle(&mut deps, mock_env(sender, &[], block), msg);
-                    total_rewards_output += extract_rewards(result);
-                }
-
-                if block % 10000 == 0 {
-                    print_status(&deps, users.clone(), block);
-                }
-            }
-
-            // Make sure all users are fully redeemed
-            for user in users {
-                let redeem_msg = HandleMsg::Redeem { amount: None };
-                let result = handle(&mut deps, mock_env(user.0, &[], 1_700_000), redeem_msg);
-                total_rewards_output += extract_rewards(result);
-            }
-
-            let error = 1.0 - (total_rewards_output as f64 / 500_000_000000.0);
-            assert!(error < 0.005, format!("{}", error));
+            sanity_run(rewards, deadline);
         }
     }
 
