@@ -70,6 +70,8 @@ pub enum HandleAnswer {
     ResumeContract { status: ResponseStatus },
     ChangeAdmin { status: ResponseStatus },
     SetDeadline { status: ResponseStatus },
+    ClaimRewardPool { status: ResponseStatus },
+    EmergencyRedeem { status: ResponseStatus },
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]

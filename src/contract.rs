@@ -94,7 +94,6 @@ pub fn handle<S: Storage, A: Api, Q: Querier>(
     let config: Config = TypedStoreMut::attach(&mut deps.storage).load(CONFIG_KEY)?;
     if config.is_stopped {
         return match msg {
-            HandleMsg::Redeem { amount } => redeem(deps, env, amount),
             HandleMsg::EmergencyRedeem {} => emergency_redeem(deps, env),
             HandleMsg::ResumeContract {} => resume_contract(deps, env),
             _ => Err(StdError::generic_err(
@@ -239,7 +238,7 @@ fn deposit<S: Storage, A: Api, Q: Querier>(
     Ok(HandleResponse {
         messages,
         log: vec![],
-        data: Some(to_binary(&ReceiveAnswer::Deposit { status: Success })?), // Returning data because `messages` is possibly empty
+        data: Some(to_binary(&ReceiveAnswer::Deposit { status: Success })?),
     })
 }
 
@@ -287,7 +286,8 @@ fn redeem<S: Storage, A: Api, Q: Querier>(
     if amount > user.locked {
         return Err(StdError::generic_err(format!(
             "insufficient funds to redeem: balance={}, required={}",
-            user.locked, amount,
+            user.locked * INC_TOKEN_SCALE,
+            amount * INC_TOKEN_SCALE,
         )));
     }
 
@@ -327,7 +327,7 @@ fn redeem<S: Storage, A: Api, Q: Querier>(
     Ok(HandleResponse {
         messages,
         log: vec![],
-        data: None,
+        data: Some(to_binary(&HandleAnswer::Redeem { status: Success })?),
     })
 }
 
@@ -448,7 +448,9 @@ fn claim_reward_pool<S: Storage, A: Api, Q: Querier>(
             config.reward_token.address,
         )?],
         log: vec![],
-        data: None,
+        data: Some(to_binary(&HandleAnswer::ClaimRewardPool {
+            status: Success,
+        })?),
     })
 }
 
@@ -522,6 +524,11 @@ fn emergency_redeem<S: Storage, A: Api, Q: Querier>(
         .load(env.message.sender.0.as_bytes())
         .unwrap_or(UserInfo { locked: 0, debt: 0 });
 
+    let mut reward_pool: RewardPool =
+        TypedStoreMut::attach(&mut deps.storage).load(REWARD_POOL_KEY)?;
+    reward_pool.inc_token_supply -= user.locked;
+    TypedStoreMut::attach(&mut deps.storage).store(REWARD_POOL_KEY, &reward_pool)?;
+
     let mut messages = vec![];
     if user.locked > 0 {
         messages.push(secret_toolkit::snip20::transfer_msg(
@@ -540,7 +547,9 @@ fn emergency_redeem<S: Storage, A: Api, Q: Querier>(
     Ok(HandleResponse {
         messages,
         log: vec![],
-        data: None,
+        data: Some(to_binary(&HandleAnswer::EmergencyRedeem {
+            status: Success,
+        })?),
     })
 }
 
