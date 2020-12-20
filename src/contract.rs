@@ -692,7 +692,7 @@ fn query_token_info() -> StdResult<Binary> {
 fn enforce_admin(config: Config, env: Env) -> StdResult<()> {
     if config.admin != env.message.sender {
         return Err(StdError::generic_err(format!(
-            "no assets locked for: {}",
+            "not an admin: {}",
             env.message.sender
         )));
     }
@@ -759,7 +759,7 @@ mod tests {
         Extern<MockStorage, MockApi, MockQuerier>,
     ) {
         let mut deps = mock_dependencies(20, &[]);
-        let env = mock_env("instantiator", &[], 1);
+        let env = mock_env("admin", &[], 1);
 
         let init_msg = InitMsg {
             reward_token: Snip20 {
@@ -981,6 +981,57 @@ mod tests {
     }
 
     // Tests
+
+    #[test]
+    fn test_admin() {
+        let (init_result, mut deps) = init_helper(10000000);
+
+        let admin_action_msg = HandleMsg::ChangeAdmin {
+            address: HumanAddr("not_admin".to_string()),
+        };
+        let handle_response = handle(&mut deps, mock_env("not_admin", &[], 1), admin_action_msg);
+        assert_eq!(
+            handle_response.unwrap_err(),
+            StdError::GenericErr {
+                msg: "not an admin: not_admin".to_string(),
+                backtrace: None
+            }
+        );
+
+        let admin_action_msg = HandleMsg::ChangeAdmin {
+            address: HumanAddr("new_admin".to_string()),
+        };
+        let handle_response = handle(&mut deps, mock_env("admin", &[], 1), admin_action_msg);
+        let unwrapped_result: HandleAnswer =
+            from_binary(&handle_response.unwrap().data.unwrap()).unwrap();
+        assert_eq!(
+            to_binary(&unwrapped_result).unwrap(),
+            to_binary(&HandleAnswer::ChangeAdmin { status: Success }).unwrap()
+        );
+
+        let admin_action_msg = HandleMsg::ChangeAdmin {
+            address: HumanAddr("not_admin".to_string()),
+        };
+        let handle_response = handle(&mut deps, mock_env("admin", &[], 1), admin_action_msg);
+        assert_eq!(
+            handle_response.unwrap_err(),
+            StdError::GenericErr {
+                msg: "not an admin: admin".to_string(),
+                backtrace: None
+            }
+        );
+
+        let admin_action_msg = HandleMsg::ChangeAdmin {
+            address: HumanAddr("not_admin".to_string()),
+        };
+        let handle_response = handle(&mut deps, mock_env("new_admin", &[], 1), admin_action_msg);
+        let unwrapped_result: HandleAnswer =
+            from_binary(&handle_response.unwrap().data.unwrap()).unwrap();
+        assert_eq!(
+            to_binary(&unwrapped_result).unwrap(),
+            to_binary(&HandleAnswer::ChangeAdmin { status: Success }).unwrap()
+        );
+    }
 
     #[test]
     fn test_single_run() {
