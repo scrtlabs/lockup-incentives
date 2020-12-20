@@ -43,6 +43,10 @@ jobs:
           command: integration-test
           args: --locked
 
+      - name: Run bash tests
+        run: |
+          make setup
+
 
   lints:
     name: Lints
