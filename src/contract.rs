@@ -564,7 +564,7 @@ fn set_deadline<S: Storage, A: Api, Q: Querier>(
     update_rewards(deps, &env, &config)?;
 
     config.deadline = height;
-    TypedStoreMut::<Config, S>::attach(&mut deps.storage).store(CONFIG_KEY, &config);
+    TypedStoreMut::<Config, S>::attach(&mut deps.storage).store(CONFIG_KEY, &config)?;
 
     Ok(HandleResponse {
         messages: vec![],
