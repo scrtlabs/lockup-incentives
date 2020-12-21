@@ -558,12 +558,13 @@ fn set_deadline<S: Storage, A: Api, Q: Querier>(
     env: Env,
     height: u64,
 ) -> StdResult<HandleResponse> {
-    let mut config = TypedStore::<Config, S>::attach(&deps.storage).load(CONFIG_KEY)?;
+    let mut config = TypedStoreMut::<Config, S>::attach(&mut deps.storage).load(CONFIG_KEY)?;
 
     enforce_admin(config.clone(), env.clone())?;
     update_rewards(deps, &env, &config)?;
 
     config.deadline = height;
+    TypedStoreMut::<Config, S>::attach(&mut deps.storage).store(CONFIG_KEY, &config);
 
     Ok(HandleResponse {
         messages: vec![],
@@ -801,8 +802,13 @@ mod tests {
         }
     }
 
-    fn msg_from_action(action: &str, user: HumanAddr) -> (HandleMsg, String) {
+    fn msg_from_action<S: Storage, A: Api, Q: Querier>(
+        deps: &Extern<S, A, Q>,
+        action: &str,
+        user: HumanAddr,
+    ) -> (HandleMsg, String) {
         let mut rng = rand::thread_rng();
+        let chance = rng.gen_range(0, 10000);
 
         match action {
             "deposit" => {
@@ -826,7 +832,22 @@ mod tests {
 
                 (msg, user.0)
             }
-            _ => (HandleMsg::ResumeContract {}, "".to_string()), // Will never happen
+            "deadline" if chance == 42 => {
+                let config: Config = TypedStore::attach(&deps.storage).load(CONFIG_KEY).unwrap();
+                let current = config.deadline as f64;
+
+                let new = rng.gen_range(current * 0.9, current * 1.1);
+
+                let msg = HandleMsg::SetDeadline { block: new as u64 };
+
+                (msg, "admin".to_string())
+            }
+            _ => (
+                HandleMsg::Redeem {
+                    amount: Some(Uint128(u128::MAX)), // This will never work but will keep the tests going
+                },
+                "".to_string(),
+            ),
         }
     }
 
@@ -838,8 +859,10 @@ mod tests {
         let reward_pool = TypedStore::<RewardPool, MockStorage>::attach(&deps.storage)
             .load(REWARD_POOL_KEY)
             .unwrap();
+        let config: Config = TypedStore::attach(&deps.storage).load(CONFIG_KEY).unwrap();
 
         println!("####### Statistics for block: {} #######", block);
+        println!("Deadline: {}", config.deadline);
         println!("Locked ETH: {}", reward_pool.inc_token_supply);
         println!("Pending rewards: {}", reward_pool.pending_rewards);
         println!(
@@ -938,7 +961,7 @@ mod tests {
 
         deposit_rewards(&mut deps, mock_env("scrt", &[], 1), rewards).unwrap();
 
-        let actions = vec!["deposit", "redeem"];
+        let actions = vec!["deposit", "redeem", "deadline"];
         let users = vec![
             HumanAddr("Lebron James".to_string()),
             HumanAddr("Kobe Bryant".to_string()),
@@ -954,12 +977,12 @@ mod tests {
             let num_of_actions = rng.gen_range(0, 5);
 
             for i in 0..num_of_actions {
-                let action_idx = rng.gen_range(0, 2);
+                let action_idx = rng.gen_range(0, actions.len());
 
                 let user_idx = rng.gen_range(0, users.len());
                 let user = users[user_idx].clone();
 
-                let (msg, sender) = msg_from_action(actions[action_idx], user.clone());
+                let (msg, sender) = msg_from_action(&deps, actions[action_idx], user.clone());
                 let result = handle(&mut deps, mock_env(sender, &[], block), msg);
                 total_rewards_output += extract_rewards(result);
             }
