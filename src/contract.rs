@@ -808,7 +808,7 @@ mod tests {
         user: HumanAddr,
     ) -> (HandleMsg, String) {
         let mut rng = rand::thread_rng();
-        let chance = rng.gen_range(0, 10000);
+        let chance = rng.gen_range(0, 100000);
 
         match action {
             "deposit" => {
@@ -836,7 +836,7 @@ mod tests {
                 let config: Config = TypedStore::attach(&deps.storage).load(CONFIG_KEY).unwrap();
                 let current = config.deadline as f64;
 
-                let new = rng.gen_range(current * 0.9, current * 1.1);
+                let new = rng.gen_range(current + 1.0, current * 1.001);
 
                 let msg = HandleMsg::SetDeadline { block: new as u64 };
 
@@ -999,8 +999,9 @@ mod tests {
             total_rewards_output += extract_rewards(result);
         }
 
-        let error = 1.0 - (total_rewards_output as f64 / 500_000_000000.0);
-        assert!(error < 0.005, format!("{}", error));
+        let error = 1.0 - (total_rewards_output as f64 / rewards as f64);
+        println!("Error is: {}", error);
+        assert!(error < 0.005);
     }
 
     // Tests
