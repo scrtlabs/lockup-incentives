@@ -19,17 +19,25 @@ start-server: # CTRL+C to stop
 		-v $$(pwd)/../secret-secret:/root/secret-secret \
 		--name secretdev enigmampc/secret-network-sw-dev:v1.0.4
 
+.PHONY: start-server-detached
+start-server-detached:
+	docker run -d --rm \
+		-p 26657:26657 -p 26656:26656 -p 1317:1317 \
+		-v $$(pwd):/root/code \
+		-v $$(pwd)/../secret-secret:/root/secret-secret \
+		--name secretdev enigmampc/secret-network-sw-dev:v1.0.4
+
 .PHONY: list-code
 list-code:
 	$(SECRETCLI) query compute list-code
 
-.PHONY: setup
-setup: compile-optimized
-	tests/setup.sh
+.PHONY: run-tests
+run-tests: compile-optimized
+	tests/integration.sh
 
 .PHONY: integration-test
 integration-test: compile-optimized
-	tests/integration.sh
+	tests/setup.sh
 
 .PHONY: compile _compile
 compile: _compile contract.wasm.gz
