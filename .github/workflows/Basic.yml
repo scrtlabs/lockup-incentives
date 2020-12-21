@@ -44,8 +44,9 @@ jobs:
           args: --locked
 
       - name: Install wasm-opt
+        uses: actions/setup-node@v1
         run: |
-          ./tests/install-wasm-tools.sh
+          npm i wasm-opt -g
 
       - name: Run bash tests
         run: |
