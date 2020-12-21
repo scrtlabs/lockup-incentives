@@ -954,7 +954,7 @@ mod tests {
         0
     }
 
-    fn sanity_run(rewards: u128, deadline: u64) {
+    fn sanity_run(rewards: u128, mut deadline: u64) {
         let mut rng = rand::thread_rng();
 
         let (init_result, mut deps) = init_helper(deadline);
@@ -973,7 +973,8 @@ mod tests {
         let mut total_rewards_output = 0;
 
         set_vks(&mut deps, users.clone());
-        for block in 2..deadline + 10_000 {
+        let mut block: u64 = 2;
+        while block < (deadline + 10_000) {
             let num_of_actions = rng.gen_range(0, 5);
 
             for i in 0..num_of_actions {
@@ -990,6 +991,12 @@ mod tests {
             if block % 10000 == 0 {
                 print_status(&deps, users.clone(), block);
             }
+
+            deadline = TypedStore::<Config, MockStorage>::attach(&deps.storage)
+                .load(CONFIG_KEY)
+                .unwrap()
+                .deadline;
+            block += 1;
         }
 
         // Make sure all users are fully redeemed

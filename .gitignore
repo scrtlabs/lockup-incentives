@@ -15,5 +15,5 @@
 .idea
 
 # Binaries
-./contract.wasm
-./contract.wasm.gz
+contract.wasm
+contract.wasm.gz
