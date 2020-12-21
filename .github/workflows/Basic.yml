@@ -45,7 +45,7 @@ jobs:
 
       - name: Install wasm-opt
         uses: actions/setup-node@v1
-        run: |
+      - run: |
           npm i wasm-opt -g
 
       - name: Run bash tests
