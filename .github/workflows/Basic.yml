@@ -43,6 +43,10 @@ jobs:
           command: integration-test
           args: --locked
 
+      - name: Install wasm-opt
+        run: |
+          ./tests/install-wasm-tools.sh
+
       - name: Run bash tests
         run: |
           make integration-test
