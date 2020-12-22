@@ -842,6 +842,18 @@ mod tests {
 
                 (msg, "admin".to_string())
             }
+            "rewards" if chance == 7 => {
+                let amount: u128 = rng.gen_range(10000e6 as u128, 100000e6 as u128);
+
+                let msg = HandleMsg::Receive {
+                    sender: user.clone(),
+                    from: user,
+                    amount: Uint128(amount),
+                    msg: to_binary(&ReceiveMsg::DepositRewards {}).unwrap(),
+                };
+
+                (msg, "scrt".to_string())
+            }
             _ => (
                 HandleMsg::Redeem {
                     amount: Some(Uint128(u128::MAX)), // This will never work but will keep the tests going
@@ -954,14 +966,28 @@ mod tests {
         0
     }
 
-    fn sanity_run(rewards: u128, mut deadline: u64) {
+    fn extract_reward_deposit(msg: HandleMsg) -> u128 {
+        match msg {
+            HandleMsg::Receive { amount, msg, .. } => {
+                let transfer_msg: ReceiveMsg = from_binary(&msg).unwrap();
+
+                match transfer_msg {
+                    ReceiveMsg::DepositRewards {} => amount.u128(),
+                    _ => 0,
+                }
+            }
+            _ => 0,
+        }
+    }
+
+    fn sanity_run(mut rewards: u128, mut deadline: u64) {
         let mut rng = rand::thread_rng();
 
         let (init_result, mut deps) = init_helper(deadline);
 
         deposit_rewards(&mut deps, mock_env("scrt", &[], 1), rewards).unwrap();
 
-        let actions = vec!["deposit", "redeem", "deadline"];
+        let actions = vec!["deposit", "redeem", "deadline", "rewards"];
         let users = vec![
             HumanAddr("Lebron James".to_string()),
             HumanAddr("Kobe Bryant".to_string()),
@@ -984,6 +1010,7 @@ mod tests {
                 let user = users[user_idx].clone();
 
                 let (msg, sender) = msg_from_action(&deps, actions[action_idx], user.clone());
+                rewards += extract_reward_deposit(msg.clone());
                 let result = handle(&mut deps, mock_env(sender, &[], block), msg);
                 total_rewards_output += extract_rewards(result);
             }
@@ -1068,7 +1095,7 @@ mod tests {
     fn test_single_run() {
         let mut rng = rand::thread_rng();
 
-        let deadline: u64 = rng.gen_range(100_000, 10_000_000);
+        let deadline: u64 = rng.gen_range(100_000, 5_000_000);
         let rewards: u128 = rng.gen_range(1_000_000000, 10_000_000_000000); // 1k-10mn SCRT
 
         sanity_run(rewards, deadline);
@@ -1080,7 +1107,7 @@ mod tests {
         let mut rng = rand::thread_rng();
 
         for run in 0..100 {
-            let deadline: u64 = rng.gen_range(100_000, 10_000_000);
+            let deadline: u64 = rng.gen_range(100_000, 5_000_000);
             let rewards: u128 = rng.gen_range(1_000_000000, 10_000_000_000000); // 1k-10mn SCRT
 
             println!("$$$$$$$$$$$$$$$$$$ Run Parameters $$$$$$$$$$$$$$$$$$");
