@@ -4,8 +4,8 @@
 make start-server-detached
 
 # Transfer secret-secret inside
-docker exec -it secretdev 'mkdir secret-secret'
-docker cp ../tests/secret-secret/contract.wasm.gz secretdev:/root/secret-secret/
+docker exec -it secretdev mkdir secret-secret
+docker cp tests/secret-secret/contract.wasm.gz secretdev:/root/secret-secret/
 
 sleep 20
 
