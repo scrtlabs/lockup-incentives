@@ -345,6 +345,11 @@ function set_viewing_keys() {
     done
 }
 
+function query_height() {
+    local status=$(secretcli status)
+    jq -r '.sync_info.latest_block_height' <<<"$status"
+}
+
 function log_test_header() {
     log " # Starting ${FUNCNAME[1]}"
 }
@@ -365,20 +370,34 @@ function redeem() {
     local redeem_tx
     local transfer_attributes
     local redeem_response
+    local redeem_error
 
     log "redeeming \"$key\""
     redeem_message='{"redeem":{"amount":"'"$amount"'"}}'
     old_balance=$(get_balance "$token_addr" "$key")
+
     tx_hash="$(compute_execute "$contract_addr" "$redeem_message" ${FROM[$key]} --gas 1000000)"
-    redeem_tx="$(wait_for_tx "$tx_hash" "waiting for redeem from \"$key\" to process")"
-    new_balance=$(get_balance "$token_addr" "$key")
+#    redeem_tx="$(wait_for_compute_tx "$tx_hash" "waiting for redeem from \"$key\" to process")"
 
-    assert_eq "$amount" $(bc <<< "$new_balance - $old_balance")
-    log "redeem response for \"$key\" returned ${amount}uscrt"
+    if redeem_tx="$(wait_for_compute_tx "$tx_hash" "waiting for redeem from \"$key\" to process")">/dev/null; then
+        redeem_response="$(data_of wait_for_compute_tx "$tx_hash" "waiting for redeem from \"$key\" to process")"
+        assert_eq "$redeem_response" "$(pad_space '{"redeem":{"status":"success"}}')"
 
-    redeem_response="$(data_of check_tx "$tx_hash")"
-    assert_eq "$redeem_response" "$(pad_space '{"redeem":{"status":"success"}}')"
-    log "redeemed ${amount} from \"$key\" successfully"
+        new_balance=$(get_balance "$token_addr" "$key")
+        assert_eq "$amount" $(bc <<<"$new_balance - $old_balance")
+
+        log "successfully redeemed ${amount} for \"$key\""
+    elif ! redeem_tx="$(wait_for_compute_tx "$tx_hash" "waiting for redeem from \"$key\" to process")">/dev/null; then
+        redeem_error="$(get_generic_err "$redeem_tx")"
+        if ! jq -Re 'startswith("insufficient funds to redeem")' <<< "$redeem_error">/dev/null; then
+            log "$redeem_error"
+            return 1
+        fi
+#        assert_eq "$redeem_error" "$(pad_space "insufficient funds to redeem: balance=$old_balance, required=$amount")"
+    fi
+
+#    assert_eq "$redeem_response" "$(pad_space '{"redeem":{"status":"success"}}')"
+
 }
 
 function get_deposit() {
@@ -410,37 +429,11 @@ function stake() {
     log "deposited ${amount} to \"$key\" successfully"
 }
 
-function redeem_amount() {
-    local contract_addr="$1"
-    local owner_key="$2"
-    local amount="$3"
-
-    log "redeem locked assets of \"$owner_key\". amount: \"$amount\""
-    local owner_address="${ADDRESS[$owner_key]}"
-    local redeem_msg='{"redeem":{"amount":"'"$amount"'"}}'
-    local redeem_response
-    redeem_response="$(compute_query "$contract_addr" "$redeem_msg")"
-    log "allowance response was: $redeem_response"
-}
-
-#function redeem() {
-#    local contract_addr="$1"
-#    local owner_key="$2"
-#
-#    log "redeem locked all assets of \"$owner_key\""
-#    local owner_address="${ADDRESS[$owner_key]}"
-#    local redeem_msg='{"redeem":{}}'
-#    local redeem_response
-#    redeem_response="$(compute_query "$contract_addr" "$redeem_msg")"
-#    log "allowance response was: $redeem_response"
-#}
-
 ##### actual test functions
 
 function test_deposit() {
     local contract_addr="$1"
     local token_addr="$2"
-
 
     log_test_header
 
@@ -586,6 +579,63 @@ function test_viewing_key() {
     fi
 }
 
+function test_simulation() {
+    local lockup_contract_addr="$1"
+    local eth_contract_addr="$2"
+    local scrt_contract_addr="$3"
+    local deadline="$4"
+
+    log_test_header
+
+    local max_eth_amount=100
+    local height=$(query_height)
+
+    while [ $height -le $(($deadline + 10)) ]; do
+        log 'Current height: '$height
+        local amount=$(($RANDOM % $max_eth_amount + 1))
+        amount=$(bc <<<"$amount * 10^18")
+
+        local action=$(($RANDOM % 2))
+        local user_idx=$(($RANDOM % 4))
+
+        # Deposit
+        if [ $action == 0 ]; then
+            log 'Depositing with amount: ' $amount
+            stake "$lockup_contract_addr" "${KEY[$user_idx]}" "$amount" "$eth_contract_addr"
+        # Redeem
+        elif [ $action == 1 ]; then
+            log 'Redeeming with amount: ' $amount
+            redeem "$lockup_contract_addr" "${KEY[$user_idx]}" "$amount" "$eth_contract_addr"
+        fi
+
+        sleep 5
+
+        height=$(query_height)
+    done
+
+    # Withdraw Everything
+    for key in "${KEY[@]}"; do
+        local deposit="$(get_deposit "$lockup_contract_addr" "$key")"
+        redeem "$lockup_contract_addr" "$key" "$deposit" "$eth_contract_addr"
+    done
+
+    local pool_query='{"reward_pool_balance":{}}'
+    local reward_pool_balance="$(compute_query "$lockup_contract_addr" "$pool_query")"
+
+    local reward_received=0
+    for key in "${KEY[@]}"; do
+        local balance=$(get_balance "$scrt_contract_addr" "$key")
+        reward_received=$(bc <<< "$reward_received + $balance")
+    done
+
+    log ''
+    log 'Simulation ended'
+    log 'Stats:'
+
+    log 'reward pool balance: ' $reward_pool_balance
+    log 'total rewards collected: ' $reward_received
+}
+
 function main() {
     log '              <####> Starting integration tests <####>'
     log "secretcli version in the docker image is: $(secretcli version)"
@@ -605,29 +655,29 @@ function main() {
     scrt_contract_hash="${scrt_contract_hash:2}"
 
     # secretETH init
-    init_msg='{"name":"secret-eth","admin":"'"${ADDRESS[a]}"'","symbol":"SETH","decimals":18,"initial_balances":[{"address":"'"${ADDRESS[a]}"'", "amount":"1000000000000000000000"}, {"address":"'"${ADDRESS[b]}"'", "amount":"1000000000000000000000"},{"address":"'"${ADDRESS[c]}"'", "amount":"1000000000000000000000"},{"address":"'"${ADDRESS[d]}"'", "amount":"1000000000000000000000"}],"prng_seed":"'"$prng_seed"'","config":{"public_total_supply":true}}'
+    init_msg='{"name":"secret-eth","admin":"'"${ADDRESS[a]}"'","symbol":"SETH","decimals":18,"initial_balances":[{"address":"'"${ADDRESS[a]}"'", "amount":"1000000000000000000000000"}, {"address":"'"${ADDRESS[b]}"'", "amount":"1000000000000000000000000"},{"address":"'"${ADDRESS[c]}"'", "amount":"1000000000000000000000000"},{"address":"'"${ADDRESS[d]}"'", "amount":"1000000000000000000000000"}],"prng_seed":"'"$prng_seed"'","config":{"public_total_supply":true}}'
     eth_contract_addr="$(init_contract "$code_id" "$init_msg")"
     eth_contract_hash="$(secretcli q compute contract-hash "$eth_contract_addr")"
     eth_contract_hash="${eth_contract_hash:2}"
 
     # Rewards init
-    status="$(secretcli status)"
-    block=$(jq -r '.sync_info.latest_block_height | tonumber' <<< "$status")
-    block=$((block+100000))
-    init_msg='{"reward_token":{"address":"'"$scrt_contract_addr"'", "contract_hash":"'"$scrt_contract_hash"'"}, "inc_token":{"address":"'"$eth_contract_addr"'", "contract_hash":"'"$eth_contract_hash"'"}, "deadline":'"$block"', "pool_claim_block":'"$block"', "viewing_key": "123", "prng_seed": "'"$prng_seed"'"}'
+    deadline=$(query_height)
+    deadline=$(($deadline + 100)) # Will run for approximately ~10 minutes
+    init_msg='{"reward_token":{"address":"'"$scrt_contract_addr"'", "contract_hash":"'"$scrt_contract_hash"'"}, "inc_token":{"address":"'"$eth_contract_addr"'", "contract_hash":"'"$eth_contract_hash"'"}, "deadline":'"$deadline"', "pool_claim_block":'"$deadline"', "viewing_key": "123", "prng_seed": "'"$prng_seed"'"}'
     lockup_contract_addr="$(create_contract '.' "$init_msg")"
     lockup_contract_hash="$(secretcli q compute contract-hash "$lockup_contract_addr")"
     lockup_contract_hash="${lockup_contract_hash:2}"
+    log 'Deadline is: ' $deadline
 
     # To make testing faster, check the logs and try to reuse the deployed contract and VKs from previous runs.
     # Remember to comment out the contract deployment and `test_viewing_key` if you do.
-#    local scrt_contract_addr='secret1zyhdfsw23p6ldlqahg9daa7remw3jwyyhwq8as'
-#    local eth_contract_addr='secret1c59jeww5g7advma6vpanzxkveyndupu8w3chkd'
-#    local lockup_contract_addr='secret1smz53pmnf7jslu834qn6l4j90xk05d8cgm7qsa'
-#    VK[a]='api_key_8zWXxxJ5vd9tHfSHvX0A3d66USmyBVFh3EOisDiGmfI='
-#    VK[b]='api_key_GdJ2B3Eo/mgbDLBsyCdhfZmT3dEzPq0pGAlia2SVlK4='
-#    VK[c]='api_key_s+uYm1vMSEeq7EwRQVsApit2KcobA1OfAbF+AOGTZO4='
-#    VK[d]='api_key_kWRCXp/kFKPjvH97bU7/zLz6ygFDo9UPykTWSbnZw8E='
+    #    local scrt_contract_addr='secret1zyhdfsw23p6ldlqahg9daa7remw3jwyyhwq8as'
+    #    local eth_contract_addr='secret1c59jeww5g7advma6vpanzxkveyndupu8w3chkd'
+    #    local lockup_contract_addr='secret1smz53pmnf7jslu834qn6l4j90xk05d8cgm7qsa'
+    #    VK[a]='api_key_8zWXxxJ5vd9tHfSHvX0A3d66USmyBVFh3EOisDiGmfI='
+    #    VK[b]='api_key_GdJ2B3Eo/mgbDLBsyCdhfZmT3dEzPq0pGAlia2SVlK4='
+    #    VK[c]='api_key_s+uYm1vMSEeq7EwRQVsApit2KcobA1OfAbF+AOGTZO4='
+    #    VK[d]='api_key_kWRCXp/kFKPjvH97bU7/zLz6ygFDo9UPykTWSbnZw8E='
 
     # Deposit prize money and transfer to contract
     log 'depositing rewards to secretSCRT and transfer to the lockup contract'
@@ -641,12 +691,12 @@ function main() {
     send_response="$(wait_for_compute_tx "$tx_hash" 'waiting for deposit rewards to complete')"
     log "$send_response"
 
-#    balance="$(get_balance "$scrt_contract_addr" "$lockup_contract_addr")"
-#    log 'lockup contracts reward balance is: '"$balance"
-#    local receiver_state_query='{"reward_pool_balance":{}}'
-#    rewards_result="$(compute_query "$lockup_contract_addr" "$receiver_state_query")"
-#    rewards="$(jq -r '.reward_pool_balance.balance' <<<"$rewards_result")"
-#    log 'lockup contracts rewards pool is: '"$rewards"
+    #    balance="$(get_balance "$scrt_contract_addr" "$lockup_contract_addr")"
+    #    log 'lockup contracts reward balance is: '"$balance"
+    #    local receiver_state_query='{"reward_pool_balance":{}}'
+    #    rewards_result="$(compute_query "$lockup_contract_addr" "$receiver_state_query")"
+    #    rewards="$(jq -r '.reward_pool_balance.balance' <<<"$rewards_result")"
+    #    log 'lockup contracts rewards pool is: '"$rewards"
 
     log '###### Contracts Details ######'
     log 'code id is: ' "$code_id"
@@ -664,6 +714,8 @@ function main() {
     test_viewing_key "$lockup_contract_addr"
     set_viewing_keys "$eth_contract_addr"
     test_deposit "$lockup_contract_addr" "$eth_contract_addr"
+    set_viewing_keys "$scrt_contract_addr"
+    test_simulation "$lockup_contract_addr" "$eth_contract_addr" "$scrt_contract_addr" "$deadline"
 
     log 'Tests completed successfully'
 

@@ -97,7 +97,7 @@ pub fn handle<S: Storage, A: Api, Q: Querier>(
             HandleMsg::EmergencyRedeem {} => emergency_redeem(deps, env),
             HandleMsg::ResumeContract {} => resume_contract(deps, env),
             _ => Err(StdError::generic_err(
-                "This contract is stopped and this action is not allowed",
+                "this contract is stopped and this action is not allowed",
             )),
         };
     }
@@ -1035,10 +1035,98 @@ mod tests {
 
         let error = 1.0 - (total_rewards_output as f64 / rewards as f64);
         println!("Error is: {}", error);
-        assert!(error < 0.005);
+        assert!(error >= 0f64 && error < 0.01);
     }
 
     // Tests
+
+    #[test]
+    fn test_claim_pool() {
+        let (init_result, mut deps) = init_helper(10000000); // Claim height is deadline + 1
+
+        let claim_msg = HandleMsg::ClaimRewardPool { to: None };
+        let handle_response = handle(&mut deps, mock_env("not_admin", &[], 10), claim_msg.clone());
+        assert_eq!(
+            handle_response.unwrap_err(),
+            StdError::GenericErr {
+                msg: "not an admin: not_admin".to_string(),
+                backtrace: None
+            }
+        );
+
+        let handle_response = handle(&mut deps, mock_env("admin", &[], 10), claim_msg.clone());
+        assert_eq!(
+            handle_response.unwrap_err(),
+            StdError::GenericErr {
+                msg: format!("minimum claim height hasn't passed yet: {}", 10000001),
+                backtrace: None
+            }
+        );
+
+        let handle_response = handle(
+            &mut deps,
+            mock_env("admin", &[], 10000001),
+            claim_msg.clone(),
+        );
+        assert_eq!(
+            handle_response.unwrap_err(),
+            StdError::GenericErr {
+                msg: "Error performing Balance query: Generic error: Querier system error: No such contract: scrt".to_string(), // No way to test external queries yet
+                backtrace: None
+            }
+        );
+    }
+
+    #[test]
+    fn test_stop_contract() {
+        let (init_result, mut deps) = init_helper(10000000);
+
+        let stop_msg = HandleMsg::StopContract {};
+        let handle_response = handle(&mut deps, mock_env("not_admin", &[], 10), stop_msg.clone());
+        assert_eq!(
+            handle_response.unwrap_err(),
+            StdError::GenericErr {
+                msg: "not an admin: not_admin".to_string(),
+                backtrace: None
+            }
+        );
+
+        let handle_response = handle(&mut deps, mock_env("admin", &[], 10), stop_msg);
+        let unwrapped_result: HandleAnswer =
+            from_binary(&handle_response.unwrap().data.unwrap()).unwrap();
+        assert_eq!(
+            to_binary(&unwrapped_result).unwrap(),
+            to_binary(&HandleAnswer::StopContract { status: Success }).unwrap()
+        );
+
+        let redeem_msg = HandleMsg::Redeem { amount: None };
+        let handle_response = handle(&mut deps, mock_env("user", &[], 20), redeem_msg);
+        assert_eq!(
+            handle_response.unwrap_err(),
+            StdError::GenericErr {
+                msg: "this contract is stopped and this action is not allowed".to_string(),
+                backtrace: None
+            }
+        );
+
+        let resume_msg = HandleMsg::ResumeContract {};
+        let handle_response = handle(&mut deps, mock_env("admin", &[], 21), resume_msg);
+        let unwrapped_result: HandleAnswer =
+            from_binary(&handle_response.unwrap().data.unwrap()).unwrap();
+        assert_eq!(
+            to_binary(&unwrapped_result).unwrap(),
+            to_binary(&HandleAnswer::ResumeContract { status: Success }).unwrap()
+        );
+
+        let redeem_msg = HandleMsg::Redeem { amount: None };
+        let handle_response = handle(&mut deps, mock_env("user", &[], 20), redeem_msg);
+        let unwrapped_result: HandleAnswer =
+            from_binary(&handle_response.unwrap().data.unwrap()).unwrap();
+        assert_eq!(
+            to_binary(&unwrapped_result).unwrap(),
+            to_binary(&HandleAnswer::Redeem { status: Success }).unwrap()
+        );
+    }
 
     #[test]
     fn test_admin() {
