@@ -257,7 +257,7 @@ fn deposit_rewards<S: Storage, A: Api, Q: Querier>(
 
     let mut reward_pool = update_rewards(deps, &env, &config)?;
 
-    reward_pool.pending_rewards += amount;
+    reward_pool.pending_rewards += amount - 1_000_000; // Subtracting 1scrt just to give room for rounding errors in calculations
     TypedStoreMut::attach(&mut deps.storage).store(REWARD_POOL_KEY, &reward_pool)?;
 
     Ok(HandleResponse {
