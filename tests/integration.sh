@@ -376,7 +376,7 @@ function redeem() {
     redeem_message='{"redeem":{"amount":"'"$amount"'"}}'
     old_balance=$(get_balance "$token_addr" "$key")
 
-    tx_hash="$(compute_execute "$contract_addr" "$redeem_message" ${FROM[$key]} --gas 1000000)"
+    tx_hash="$(compute_execute "$contract_addr" "$redeem_message" ${FROM[$key]} --gas 350000)"
 #    redeem_tx="$(wait_for_compute_tx "$tx_hash" "waiting for redeem from \"$key\" to process")"
 
     if redeem_tx="$(wait_for_compute_tx "$tx_hash" "waiting for redeem from \"$key\" to process")">/dev/null; then
@@ -423,7 +423,7 @@ function stake() {
     local deposit_response
     local deposit_binary="$(base64 <<< "$deposit_message")"
     local send_message='{"send":{"recipient":"'"$contract_addr"'","amount":"'"$amount"'","msg":"'"$deposit_binary"'"}}'
-    tx_hash="$(compute_execute "$token_addr" "$send_message" ${FROM[$key]} --gas 1000000)"
+    tx_hash="$(compute_execute "$token_addr" "$send_message" ${FROM[$key]} --gas 350000)"
     deposit_response="$(data_of wait_for_compute_tx "$tx_hash" "waiting for stake to \"$key\" to process")"
     assert_eq "$deposit_response" "$(pad_space '{"send":{"status":"success"}}')"
     log "deposited ${amount} to \"$key\" successfully"
