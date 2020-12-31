@@ -13,7 +13,7 @@ use crate::msg::ResponseStatus::Success;
 use crate::msg::{
     HandleAnswer, HandleMsg, InitMsg, QueryAnswer, QueryMsg, ReceiveAnswer, ReceiveMsg,
 };
-use crate::state::{Config, RewardPool, Snip20, UserInfo};
+use crate::state::{Config, RewardPool, UserInfo};
 use crate::viewing_key::{ViewingKey, VIEWING_KEY_SIZE};
 
 pub fn init<S: Storage, A: Api, Q: Querier>(
@@ -109,12 +109,6 @@ pub fn handle<S: Storage, A: Api, Q: Querier>(
         } => receive(deps, env, from, amount.u128(), msg),
         HandleMsg::CreateViewingKey { entropy, .. } => create_viewing_key(deps, env, entropy),
         HandleMsg::SetViewingKey { key, .. } => set_viewing_key(deps, env, key),
-        HandleMsg::UpdateIncentivizedToken { token: new_token } => {
-            update_inc_token(deps, env, new_token)
-        }
-        HandleMsg::UpdateRewardToken { token: new_token } => {
-            update_reward_token(deps, env, new_token)
-        }
         HandleMsg::ClaimRewardPool { to: recipient } => claim_reward_pool(deps, env, recipient),
         HandleMsg::StopContract {} => stop_contract(deps, env),
         HandleMsg::ChangeAdmin { address } => change_admin(deps, env, address),
@@ -365,50 +359,6 @@ pub fn set_viewing_key<S: Storage, A: Api, Q: Querier>(
         messages: vec![],
         log: vec![],
         data: Some(to_binary(&HandleAnswer::SetViewingKey { status: Success })?),
-    })
-}
-
-fn update_inc_token<S: Storage, A: Api, Q: Querier>(
-    deps: &mut Extern<S, A, Q>,
-    env: Env,
-    new_token: Snip20,
-) -> StdResult<HandleResponse> {
-    let mut config_store = TypedStoreMut::attach(&mut deps.storage);
-    let mut config: Config = config_store.load(CONFIG_KEY)?;
-
-    enforce_admin(config.clone(), env)?;
-
-    config.inc_token = new_token;
-    config_store.store(CONFIG_KEY, &config)?;
-
-    Ok(HandleResponse {
-        messages: vec![],
-        log: vec![],
-        data: Some(to_binary(&HandleAnswer::UpdateIncentivizedToken {
-            status: Success,
-        })?),
-    })
-}
-
-fn update_reward_token<S: Storage, A: Api, Q: Querier>(
-    deps: &mut Extern<S, A, Q>,
-    env: Env,
-    new_token: Snip20,
-) -> StdResult<HandleResponse> {
-    let mut config_store = TypedStoreMut::attach(&mut deps.storage);
-    let mut config: Config = config_store.load(CONFIG_KEY)?;
-
-    enforce_admin(config.clone(), env)?;
-
-    config.reward_token = new_token;
-    config_store.store(CONFIG_KEY, &config)?;
-
-    Ok(HandleResponse {
-        messages: vec![],
-        log: vec![],
-        data: Some(to_binary(&HandleAnswer::UpdateRewardToken {
-            status: Success,
-        })?),
     })
 }
 
@@ -742,6 +692,7 @@ mod tests {
     use crate::msg::HandleMsg::{Receive, Redeem, SetViewingKey};
     use crate::msg::QueryMsg::{Deposit, Rewards};
     use crate::msg::ReceiveMsg;
+    use crate::state::Snip20;
     use cosmwasm_std::testing::{
         mock_dependencies, MockApi, MockQuerier, MockStorage, MOCK_CONTRACT_ADDR,
     };

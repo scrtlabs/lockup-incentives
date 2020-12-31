@@ -39,12 +39,6 @@ pub enum HandleMsg {
     },
 
     // Admin commands
-    UpdateIncentivizedToken {
-        token: Snip20,
-    },
-    UpdateRewardToken {
-        token: Snip20,
-    },
     SetDeadline {
         block: u64,
     },
@@ -64,8 +58,6 @@ pub enum HandleAnswer {
     Redeem { status: ResponseStatus },
     CreateViewingKey { key: ViewingKey },
     SetViewingKey { status: ResponseStatus },
-    UpdateIncentivizedToken { status: ResponseStatus },
-    UpdateRewardToken { status: ResponseStatus },
     StopContract { status: ResponseStatus },
     ResumeContract { status: ResponseStatus },
     ChangeAdmin { status: ResponseStatus },
