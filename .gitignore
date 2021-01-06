@@ -17,3 +17,6 @@
 # Binaries
 contract.wasm
 contract.wasm.gz
+
+*.der
+*tx.json
