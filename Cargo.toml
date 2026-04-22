@@ -44,4 +44,4 @@ base64 = "0.12.3"
 subtle = { version = "2.2.3", default-features = false }
 
 [dev-dependencies]
-rand = "0.7.3"
+rand = "0.8.6"
